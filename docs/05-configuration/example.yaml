@@ -1,0 +1,118 @@
+# Complete example for a server in a restricted network.
+# Hostnames ending in .example are placeholders: replace them with mirrors you can reach.
+version: 1
+
+data_dir: /data
+listen: 0.0.0.0:8080
+public_base_url: https://mirror.example.com
+trust_forwarded: true
+offline_miss_status: 504
+
+# Outbound hop to the wider internet (a local SOCKS5 or HTTP proxy). Remove if not needed.
+upstream_proxy: socks5h://127.0.0.1:1080
+
+admin:
+  listen: 127.0.0.1:9090
+
+log:
+  level: info
+  format: json
+
+storage:
+  max_bytes: 120GiB
+  min_free_bytes: 10GiB
+  high_watermark: 0.90
+  low_watermark: 0.75
+  eviction_policy: score
+  protect_recent_days: 14
+  protect:
+    - {repo: go, match: "github.com/mycompany/**"}
+
+repos:
+  - name: go
+    kind: go
+    verify: basic
+    upstreams:
+      - url: https://goproxy.mirror-a.example
+      - url: https://proxy.golang.org
+    quota_bytes: 20GiB
+
+  - name: npm
+    kind: npm
+    upstreams:
+      - url: https://npm.mirror-a.example/
+      - url: https://registry.npmjs.org/
+    quota_bytes: 20GiB
+
+  - name: pypi
+    kind: pypi
+    upstreams:
+      - url: https://pypi.mirror-a.example
+      - url: https://pypi.org
+    files_hosts: [files.pythonhosted.org]
+    quota_bytes: 25GiB
+
+  - name: crates
+    kind: crates
+    upstreams:
+      - url: https://index.crates.io
+    dl_upstreams:
+      - https://static.crates.io/crates/{crate}/{crate}-{version}.crate
+    quota_bytes: 8GiB
+
+  - name: rustup
+    kind: rustup
+    upstreams:
+      - url: https://static.rust-lang.org
+    quota_bytes: 15GiB
+    evict_weight: 0.5
+
+  - name: maven-central
+    kind: maven
+    mount: /maven/central
+    upstreams:
+      - url: https://maven.mirror-a.example/central
+      - url: https://repo.maven.apache.org/maven2
+    quota_bytes: 20GiB
+
+  - name: maven-google
+    kind: maven
+    mount: /maven/google
+    upstreams:
+      - url: https://maven.google.com
+    quota_bytes: 8GiB
+
+  - name: gradle-plugins
+    kind: maven
+    mount: /maven/gradle-plugins
+    upstreams:
+      - url: https://plugins.gradle.org/m2
+
+  - name: gradle-dist
+    kind: generic
+    upstreams:
+      - url: https://services.gradle.org
+    rules:
+      - {match: '^/distributions/gradle-[0-9][^/]*-(bin|all)\.zip(\.sha256)?$', class: immutable}
+
+  - name: apt-debian
+    kind: apt
+    mount: /apt/debian
+    upstreams:
+      - url: https://debian.mirror-a.example/debian
+      - url: https://deb.debian.org/debian
+    quota_bytes: 15GiB
+
+  - name: apt-debian-security
+    kind: apt
+    mount: /apt/debian-security
+    upstreams:
+      - url: https://deb.debian.org/debian-security
+
+  - name: github
+    kind: generic
+    upstreams:
+      - url: https://github.com
+    rules:
+      - {match: '^/[^/]+/[^/]+/releases/download/[^/]+/[^/]+$', class: immutable}
+    quota_bytes: 10GiB
