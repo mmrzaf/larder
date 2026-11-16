@@ -1,0 +1,15 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: Larder Fixture
+Suite: bookworm
+Acquire-By-Hash: yes
+SHA256:
+ d3488e93e6ed2b127c60db997924436ca43aa51a4e4ac9ee5729a881ae4b5ed5 354 main/binary-amd64/Packages
+ ef300386be31de98eb0bd6a825fa0fda6e1968be9a4b64a7a12018181329e80f 195 main/binary-amd64/Packages.gz
+ 6adfc29830186c3559ddfda2960c67e2b0575c4ceb249178d5a7acd76f0e5aff 248 main/binary-amd64/Packages.xz
+ 90b740cb75a1c140a6d6e3255a300c7527f652f0c67064eb23ac77e5c7962da9 233 main/binary-amd64/Packages.bz2
+ 2222222222222222222222222222222222222222222222222222222222222222 123 main/binary-amd64/Release
+-----BEGIN PGP SIGNATURE-----
+fixture
+-----END PGP SIGNATURE-----

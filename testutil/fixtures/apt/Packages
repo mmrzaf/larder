@@ -1,0 +1,12 @@
+Package: demo
+Version: 1.0
+Architecture: amd64
+Filename: pool/main/d/demo/demo_1.0_amd64.deb
+Size: 17
+SHA256: b03beb0bd17807c4cc3a8816f2a257f02667f60cc5bb7660897ebc96b5fd00f5
+
+Package: demo-extra
+Version: 2.0
+Architecture: amd64
+Filename: pool/main/d/demo/demo-extra_2.0_amd64.deb
+SHA256: 1111111111111111111111111111111111111111111111111111111111111111
