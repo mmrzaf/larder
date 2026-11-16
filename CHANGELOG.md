@@ -1,8 +1,8 @@
 # Changelog
 
-## 1.0.0
+## [1.0.0-rc.1] - 2026-11-17
 
-First stable release.
+First release candidate for 1.0.0.
 
 Supported ecosystems: npm, PyPI, Debian and Ubuntu apt, and Alpine apk
 (validated with real clients by `scripts/acceptance.sh`); Go modules, Maven and

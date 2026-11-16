@@ -283,10 +283,33 @@ func TestMatrix_O01_DockerImage(t *testing.T) {
 	if proxy := os.Getenv("HTTPS_PROXY"); proxy != "" {
 		buildArgs = append(buildArgs, "--network=host", "--build-arg", "HTTPS_PROXY="+proxy, "--build-arg", "HTTP_PROXY="+proxy)
 	}
-	build := exec.Command("docker", append(buildArgs, ".")...)
-	build.Dir = root
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("docker build: %v\n%s", err, output)
+	// A restricted network reaches the Go modules through its own proxy, as
+	// the deployment pipeline does.
+	if proxy := os.Getenv("GOPROXY"); proxy != "" {
+		buildArgs = append(buildArgs, "--build-arg", "GOPROXY="+proxy)
+	}
+	build := func() ([]byte, error) {
+		command := exec.Command("docker", append(append([]string{}, buildArgs...), ".")...)
+		command.Dir = root
+		return command.CombinedOutput()
+	}
+	var buildOutput []byte
+	var buildErr error
+	// The build pulls its base images and the Go modules from public services.
+	// A registry or module proxy that rate-limits anonymous requests is not a
+	// broken Dockerfile, so the build is retried before it is reported.
+	for attempt := 1; attempt <= 3; attempt++ {
+		buildOutput, buildErr = build()
+		if buildErr == nil {
+			break
+		}
+		if attempt < 3 {
+			t.Logf("docker build attempt %d failed, retrying: %v", attempt, buildErr)
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+	}
+	if buildErr != nil {
+		t.Fatalf("docker build: %v\n%s", buildErr, buildOutput)
 	}
 	example := filepath.Join(root, "docs", "05-configuration", "example.yaml")
 	run := exec.Command("docker", "run", "-d", "--name", name, "-v", example+":/etc/larder/larder.yaml:ro", name)

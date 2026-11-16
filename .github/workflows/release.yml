@@ -1,26 +1,79 @@
 name: release
+
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, for example v1.0.0"
+        required: true
+        type: string
+
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
 jobs:
+  metadata:
+    name: Resolve the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      image: ${{ steps.meta.outputs.image }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - id: meta
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED:-$GITHUB_REF_NAME}"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag $tag is not a version" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "image=ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
   gates:
+    name: Gates
+    needs: metadata
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: ${{ needs.metadata.outputs.tag }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - run: ./scripts/ci.sh
 
   acceptance:
+    name: Acceptance
+    needs: metadata
     runs-on: ubuntu-latest
-    needs: gates
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.tag }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -30,55 +83,99 @@ jobs:
       - run: ./scripts/acceptance.sh
 
   publish:
+    name: Publish
+    needs: [metadata, gates, acceptance]
     runs-on: ubuntu-latest
-    needs: [gates, acceptance]
+    timeout-minutes: 45
     permissions:
       contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.metadata.outputs.tag }}
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build archives
-        run: make release VERSION="${GITHUB_REF_NAME#v}"
-      - name: Publish GitHub release
+      # The release notes are the CHANGELOG section for this version, so a
+      # missing section fails before anything is published.
+      - name: Release notes
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          flags=""
-          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS \
-            --title "Larder ${GITHUB_REF_NAME#v}" --verify-tag $flags --notes-file CHANGELOG.md
+          set -euo pipefail
+          awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 { section = 1; next }
+            section && /^## / { exit }
+            section {
+              if (!started && $0 !~ /^[ \t]*$/) started = 1
+              if (started) line[++count] = $0
+            }
+            END {
+              while (count > 0 && line[count] ~ /^[ \t]*$/) count--
+              for (i = 1; i <= count; i++) print line[i]
+            }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "CHANGELOG.md has no section for $VERSION" >&2
+            exit 1
+          fi
+      - name: Build archives
+        run: make release VERSION="${{ needs.metadata.outputs.version }}"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Image tags
-        id: tags
+      - name: Image metadata
+        id: image
+        env:
+          IMAGE: ${{ needs.metadata.outputs.image }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          version="${GITHUB_REF_NAME#v}"
-          tags="$image:$version"
-          case "$version" in
-            *-*) ;;
-            *) minor="${version%.*}"; tags="$tags,$image:$minor,$image:latest" ;;
-          esac
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
-          echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          tags="$IMAGE:$VERSION"
+          if [ "$PRERELEASE" = "false" ]; then
+            tags="$tags,$IMAGE:${VERSION%.*},$IMAGE:latest"
+          fi
+          {
+            echo "tags=$tags"
+            echo "commit=$(git rev-parse --short=12 HEAD)"
+            echo "date=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+      # The image is published before the release, so a release never points at
+      # an image tag that does not exist.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: ${{ steps.image.outputs.tags }}
           build-args: |
-            VERSION=${{ github.ref_name }}
-            COMMIT=${{ github.sha }}
-            DATE=${{ steps.tags.outputs.date }}
+            VERSION=${{ needs.metadata.outputs.version }}
+            COMMIT=${{ steps.image.outputs.commit }}
+            DATE=${{ steps.image.outputs.date }}
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then flags="--prerelease"; fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+            gh release edit "$TAG" --title "Larder $VERSION" \
+              --notes-file "$RUNNER_TEMP/notes.md" $flags
+          else
+            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --title "Larder $VERSION" --verify-tag $flags \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
