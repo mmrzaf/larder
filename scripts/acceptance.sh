@@ -580,7 +580,7 @@ PYTHON_IMAGE=python:3.12-slim
 pip_run() {
   local name=$1
   shift
-  docker run --rm --network host --label "larder-acceptance=$$" \
+  docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp --label "larder-acceptance=$$" \
     -e HTTP_PROXY=http://127.0.0.1:9 -e HTTPS_PROXY=http://127.0.0.1:9 -e NO_PROXY=127.0.0.1 -e PIP_DISABLE_PIP_VERSION_CHECK=1 \
     -e "PIP_INDEX_URL=http://127.0.0.1:$PORT/pypi/simple/" -e PIP_TRUSTED_HOST=127.0.0.1 \
     -e PIP_RETRIES=0 -e PIP_TIMEOUT=30 \
@@ -595,7 +595,7 @@ suite_pypi() {
   docker pull -q "$PYTHON_IMAGE" >/dev/null || die "cannot pull $PYTHON_IMAGE"
   mkdir -p "$PIP_DIR"
   log "pypi: pinned requirements with hashes, generated against the public index"
-  docker run --rm --network host --label "larder-acceptance=$$" -e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY \
+  docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp --label "larder-acceptance=$$" -e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY \
     -e PIP_DISABLE_PIP_VERSION_CHECK=1 -v "$PIP_DIR:/work" "$PYTHON_IMAGE" sh -c '
       cd /work && mkdir -p wheels &&
       printf "requests==2.32.3\ncertifi==2024.8.30\ncharset-normalizer==3.3.2\nidna==3.8\nurllib3==2.2.2\n" > pins.txt &&
