@@ -1,0 +1,37 @@
+# Larder behind a reverse proxy that runs on the same host. Required settings:
+#   LARDER_VERSION  image tag to run, for example 1.0.0 (no default on purpose)
+#   LARDER_IMAGE    image repository (default ghcr.io/mmrzaf/larder)
+# The public listener is published on the loopback interface only; point the
+# reverse proxy at 127.0.0.1:8080. The admin listener is not published.
+services:
+  larder:
+    image: ${LARDER_IMAGE:-ghcr.io/mmrzaf/larder}:${LARDER_VERSION:?set LARDER_VERSION to the image tag}
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 60s
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - larder-data:/data
+      - ./larder.yaml:/etc/larder/larder.yaml:ro
+    healthcheck:
+      test: ["CMD", "/larder", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  larder-data:

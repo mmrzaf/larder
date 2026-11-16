@@ -1,0 +1,22 @@
+[Unit]
+Description=Larder package cache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=larder
+ExecStart=/usr/local/bin/larder serve -c /etc/larder/larder.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=60
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/larder
+StateDirectory=larder
+
+[Install]
+WantedBy=multi-user.target
