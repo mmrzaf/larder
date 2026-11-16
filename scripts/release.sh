@@ -11,18 +11,18 @@ version=${1:?usage: scripts/release.sh <version without v>}
 tag=v$version
 
 if [ -n "$(git status --porcelain)" ]; then
-    echo "the working tree is not clean" >&2
-    exit 1
+	echo "the working tree is not clean" >&2
+	exit 1
 fi
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-    if [ "$(git rev-parse "$tag^{commit}")" != "$(git rev-parse HEAD)" ]; then
-        echo "tag $tag does not point at HEAD" >&2
-        exit 1
-    fi
+	if [ "$(git rev-parse "$tag^{commit}")" != "$(git rev-parse HEAD)" ]; then
+		echo "tag $tag does not point at HEAD" >&2
+		exit 1
+	fi
 fi
 if ! grep -q "^## \[\?$version\]\?" CHANGELOG.md; then
-    echo "CHANGELOG.md has no entry for $version" >&2
-    exit 1
+	echo "CHANGELOG.md has no entry for $version" >&2
+	exit 1
 fi
 
 ./scripts/ci.sh
@@ -31,9 +31,9 @@ make docker VERSION="$version" IMAGE="${IMAGE:-larder}"
 
 # The acceptance suite needs docker, node and the public registries.
 if [ "${SKIP_ACCEPTANCE:-0}" != "1" ]; then
-    ./scripts/acceptance.sh
+	./scripts/acceptance.sh
 else
-    echo "acceptance skipped on request: the release is NOT validated against real clients" >&2
+	echo "acceptance skipped on request: the release is NOT validated against real clients" >&2
 fi
 
 cat <<NEXT
@@ -46,5 +46,6 @@ To publish, from this commit:
   git tag -s $tag -m "Larder $version"
   git push origin $tag
 The release workflow then rebuilds, runs the acceptance suite and publishes
-the archives and the image.
+the archives and the image. A Gitman server tracking this repository builds
+and deploys the same tag from .gitman.yml.
 NEXT

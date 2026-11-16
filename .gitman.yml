@@ -1,0 +1,156 @@
+# Larder on Gitman. A v* tag builds larder:<version> on the host's Docker and
+# deploys it to production. A branch runs nothing. GitHub is only a mirror and
+# publishes the same version independently.
+#
+# Ref rule: v* tags need run, docker and managed deployment.
+image: docker:29-cli
+docker: true
+requires:
+  - golang:1.27-alpine
+  - gcr.io/distroless/static-debian12
+
+images:
+  larder: {keep: 3}
+
+env:
+  DOCKER_BUILDKIT: "1"
+  BUILDKIT_PROGRESS: plain
+  GOPROXY: https://mirror.abrha.net/repository/go/,direct
+
+targets:
+  production:
+    tag: "v*.*.*"
+    env:
+      DEPLOY_DIR: /srv/apps/larder
+
+steps:
+  - name: check the tag
+    when: tag
+    run: |
+      set -eu
+      version="${GITMAN_VERSION#v}"
+      if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+        echo "Tag $GITMAN_REF is not a version" >&2
+        exit 1
+      fi
+      if ! awk -v heading="## [$version]" 'index($0, heading) == 1 { found = 1 } END { exit !found }' CHANGELOG.md; then
+        echo "CHANGELOG.md has no section for $version" >&2
+        exit 1
+      fi
+
+  - name: build image
+    when: tag
+    run: |
+      set -eu
+      version="${GITMAN_VERSION#v}"
+      commit="$(printf '%s' "$GITMAN_COMMIT" | cut -c1-12)"
+      image="larder:$version"
+      date=unknown
+      if epoch="$(git log -1 --format=%ct "$GITMAN_COMMIT" 2>/dev/null)"; then
+        date="$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)"
+      fi
+      docker build --pull=false \
+        --build-arg GOPROXY="$GOPROXY" \
+        --build-arg VERSION="$version" \
+        --build-arg COMMIT="$commit" \
+        --build-arg DATE="$date" \
+        --label "org.opencontainers.image.title=larder" \
+        --label "org.opencontainers.image.revision=$GITMAN_COMMIT" \
+        --label "org.opencontainers.image.ref.name=$GITMAN_REF" \
+        --label "org.opencontainers.image.version=$version" \
+        --tag "$image" \
+        --file deploy/Dockerfile \
+        .
+      echo "image=$image" >> "$GITMAN_SUMMARY"
+
+  - name: check image
+    when: tag
+    run: |
+      set -eu
+      version="${GITMAN_VERSION#v}"
+      commit="$(printf '%s' "$GITMAN_COMMIT" | cut -c1-12)"
+      image="larder:$version"
+      output="$(docker run --rm --pull never "$image" version)"
+      case "$output" in
+        "larder $version (commit $commit, "*) ;;
+        *)
+          echo "Unexpected version output: $output" >&2
+          exit 1
+          ;;
+      esac
+      revision="$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+      test "$revision" = "$GITMAN_COMMIT"
+
+  - name: deploy
+    type: deploy
+    when: production
+    run: |
+      set -eu
+      version="${GITMAN_VERSION#v}"
+      image="larder:$version"
+      compose="$(cat deploy/compose.yaml)"
+      docker run --rm --pull never \
+        --network host \
+        --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+        --mount type=bind,src=/srv,dst=/srv \
+        --env DOCKER_HOST=unix:///var/run/docker.sock \
+        --env DEPLOY_DIR="$DEPLOY_DIR" \
+        --env IMAGE_REF="$image" \
+        --env VERSION="$version" \
+        --env COMPOSE_CONTENT="$compose" \
+        docker:29-cli sh -c '
+          set -eu
+          if [ ! -f "$DEPLOY_DIR/larder.yaml" ]; then
+            echo "Missing $DEPLOY_DIR/larder.yaml; create the configuration first" >&2
+            exit 1
+          fi
+          printf "%s\n" "$COMPOSE_CONTENT" > "$DEPLOY_DIR/compose.yaml"
+          touch "$DEPLOY_DIR/.env"
+          set_env() {
+            if grep -q "^$1=" "$DEPLOY_DIR/.env"; then
+              sed -i "s#^$1=.*#$1=$2#" "$DEPLOY_DIR/.env"
+            else
+              printf "%s=%s\n" "$1" "$2" >> "$DEPLOY_DIR/.env"
+            fi
+          }
+          set_env LARDER_IMAGE larder
+          set_env LARDER_VERSION "$VERSION"
+          docker image inspect "$IMAGE_REF" >/dev/null
+          # compose.override.yaml belongs to the operator (reverse proxy
+          # network, ports, a different image) and is never overwritten here.
+          files="-f $DEPLOY_DIR/compose.yaml"
+          if [ -f "$DEPLOY_DIR/compose.override.yaml" ]; then
+            files="$files -f $DEPLOY_DIR/compose.override.yaml"
+          fi
+          docker compose \
+            --project-name larder \
+            --project-directory "$DEPLOY_DIR" \
+            --env-file "$DEPLOY_DIR/.env" \
+            $files \
+            up -d --no-build --pull never --remove-orphans --wait --wait-timeout 120
+        '
+      echo "version=$version" >> "$GITMAN_SUMMARY"
+
+  - name: verify
+    when: production
+    run: |
+      set -eu
+      version="${GITMAN_VERSION#v}"
+      container="$(docker ps \
+        --filter label=com.docker.compose.project=larder \
+        --filter label=com.docker.compose.service=larder \
+        --format '{{.Names}}' | head -n 1)"
+      if [ -z "$container" ]; then
+        echo "No running larder container" >&2
+        exit 1
+      fi
+      output="$(docker exec "$container" /larder version)"
+      case "$output" in
+        "larder $version "*) ;;
+        *)
+          echo "Deployed version: $output" >&2
+          exit 1
+          ;;
+      esac
+      docker exec "$container" /larder healthcheck
+      docker exec "$container" /larder config check

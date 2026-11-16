@@ -52,7 +52,10 @@ The version is taken from the nearest git tag. Release archives are
 reproducible: building the same commit twice yields identical checksums.
 `scripts/release.sh <version>` verifies the checkout, runs every gate and the
 acceptance suite, and builds the archives and the image; it does not tag or
-publish. Publishing runs from a `v*` tag in `.github/workflows/release.yml`.
+publish. Publishing runs from a `v*` tag in `.github/workflows/release.yml`. A
+Gitman server tracking this repository runs `.gitman.yml` on the same tag: it
+builds `larder:<version>` on the host and updates the compose stack in its
+deployment directory.
 
 ## Quick start with a binary
 
