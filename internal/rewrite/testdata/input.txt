@@ -1,0 +1,4 @@
+alpha https://registry.npmjs.org/demo/-/demo-1.0.0.tgz
+beta https://mirror.example/npm/demo/-/demo-1.0.0.tgz
+gamma https://registry.npmjs.org.evil/demo/-/demo-1.0.0.tgz
+delta https://mirror.example/npmx/demo/-/demo-1.0.0.tgz
