@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0-rc.2] - 2026-11-17
+
+Second release candidate for 1.0.0.
+
+- Fix npm acceptance tests for full and abbreviated metadata cache variants.
+- Verify stale metadata serving when the upstream is unavailable.
+- Improve npm acceptance assertions and reliability.
+- Use npm acceptance as the release gate while retaining opt-in ecosystem suites.
+- Update release scripts and testing documentation.
+
+
 ## [1.0.0-rc.1] - 2026-11-17
 
 First release candidate for 1.0.0.
