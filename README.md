@@ -205,7 +205,9 @@ existing Go, Maven, or generic cache trees without contacting an upstream.
 `scripts/ci.sh` runs formatting, vet, build, tests, race tests when a C
 toolchain exists, coverage thresholds, module verification, hygiene checks,
 and documentation consistency tests. `scripts/acceptance.sh` runs the real npm,
-pip, apt and apk clients and fails on any skipped check. `scripts/e2e-real.sh` runs
+pip, apt and apk clients and fails on any skipped check. The tag-release
+workflow currently requires the npm acceptance suite (`ACCEPT_SUITES=npm`);
+the full acceptance matrix remains available locally. `scripts/e2e-real.sh` runs
 other ecosystems' clients when `LARDER_E2E=1` is set and skips tools that are
 not installed; a skip there is not a pass.
 
