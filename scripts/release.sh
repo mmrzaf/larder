@@ -29,9 +29,10 @@ fi
 make release VERSION="$version"
 make docker VERSION="$version" IMAGE="${IMAGE:-larder}"
 
-# The acceptance suite needs docker, node and the public registries.
+# Match the npm acceptance gate on tagged GitHub releases. To run every
+# ecosystem locally, set ACCEPT_SUITES="npm apt pypi alpine crash diskfull".
 if [ "${SKIP_ACCEPTANCE:-0}" != "1" ]; then
-	./scripts/acceptance.sh
+	ACCEPT_SUITES="${ACCEPT_SUITES:-npm}" ./scripts/acceptance.sh
 else
 	echo "acceptance skipped on request: the release is NOT validated against real clients" >&2
 fi
