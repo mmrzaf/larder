@@ -411,8 +411,8 @@ suite_npm() {
 	metadata_url="http://127.0.0.1:$PORT/npm/left-pad"
 	for variant in full abbrev; do
 		case "$variant" in
-			full) accept='application/json' ;;
-			abbrev) accept='application/vnd.npm.install-v1+json' ;;
+		full) accept='application/json' ;;
+		abbrev) accept='application/vnd.npm.install-v1+json' ;;
 		esac
 		curl -fsS -H "Accept: $accept" -D "$NPM_DIR/$variant.headers" \
 			-o "$NPM_DIR/$variant.json" "$metadata_url" ||
@@ -748,10 +748,23 @@ suite_pypi() {
 	}
 	expect_eq "wheels fetched again after restart" "$(since "$before" | grep -F '"repo":"pypi"' | grep -F '.whl' | grep -cF '"cache":"MISS"')" 0
 
+	# The offline probe must use the same negotiated cache variant as pip.
+	local pypi_index="http://127.0.0.1:$PORT/pypi/simple/requests/"
+	curl -fsS -H 'Accept: application/vnd.pypi.simple.v1+json' \
+		-D "$PIP_DIR/index.headers" -o /dev/null "$pypi_index" ||
+		die "cannot read the PyPI JSON index before the outage"
+	tr -d '\r' <"$PIP_DIR/index.headers" |
+		grep -qiFx 'X-Larder-Key: pypi:/simple/requests/#json' ||
+		die "PyPI outage probe would request the wrong metadata variant"
+	pass "JSON index variant available for the outage probe"
+
 	log "pypi: upstream unreachable"
 	restart_larder dead
 	before=$(mark)
-	wait_stale "http://127.0.0.1:$PORT/pypi/simple/requests/"
+	# pip negotiates the PyPI JSON index; the HTML index is a separate
+	# cache variant and may never have been requested by pip.
+	wait_stale "$pypi_index" \
+		-H 'Accept: application/vnd.pypi.simple.v1+json'
 	pip_run outage "$PIP_INSTALL --target /tmp/t" || {
 		tail -20 "$PIP_DIR/outage.out"
 		die "cached packages did not install while the upstream was down"
@@ -848,21 +861,45 @@ suite_alpine() {
 		stop_larder
 	done
 
+	concurrent_apk_clients() {
+		local i first=${ALPINES%% *} pids=() status=0
+		for i in 1 2 3 4; do
+			(apk_run "$first" install >"$WORK/apk-par$i.out" 2>&1) &
+			pids+=($!)
+		done
+		for i in "${!pids[@]}"; do
+			if ! wait "${pids[$i]}"; then
+				status=1
+			fi
+		done
+		return "$status"
+	}
+
+	# A cold cache has no stale copy to fall back to, so a transient
+	# transport error against the public CDN fails a client outright. Retry
+	# only when the log shows such an error; a real concurrency failure
+	# still stops the suite.
 	log "alpine: concurrent clients on a cold cache"
-	rm -rf "$WORK/data"
-	start_larder live
-	local pids=() i first=${ALPINES%% *}
-	for i in 1 2 3 4; do
-		(apk_run "$first" install >"$WORK/apk-par$i.out" 2>&1) &
-		pids+=($!)
+	local attempt before
+	for attempt in 1 2 3; do
+		stop_larder
+		rm -rf "$WORK/data"
+		before=$(mark)
+		start_larder live
+		if concurrent_apk_clients; then
+			pass "four concurrent clients succeeded"
+			break
+		fi
+		if ((attempt == 3)) || ! tail -n +$((before + 1)) "$WORK/larder.log" |
+			grep -qiE 'TLS handshake timeout|dial tcp|i/o timeout|connection refused|context deadline exceeded'; then
+			local i
+			for i in 1 2 3 4; do
+				tail -20 "$WORK/apk-par$i.out"
+			done
+			die "concurrent apk clients failed (attempt $attempt)"
+		fi
+		log "alpine: upstream transport error, retrying concurrent clients ($attempt/3)"
 	done
-	for i in "${!pids[@]}"; do
-		wait "${pids[$i]}" || {
-			tail -20 "$WORK/apk-par$((i + 1)).out"
-			die "concurrent apk client #$((i + 1)) failed"
-		}
-	done
-	pass "four concurrent clients succeeded"
 	stop_larder
 }
 
