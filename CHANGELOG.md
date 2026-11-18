@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0] - 2026-11-18
+
+First stable release of Larder. The production-validated npm, PyPI, apt and
+Alpine caching paths and the other documented ecosystems retain their existing
+interfaces and behaviors.
+
+- Remove an unused internal HTTP handler alias.
+- Align engineering documentation with the Go toolchain required by `go.mod`.
+- Wait for the fake upstream and allocate distinct ports in the offline drill self-test.
+- Retry the Alpine concurrent acceptance probe on transient CDN transport errors.
+
 ## [1.0.0-rc.2] - 2026-11-17
 
 Second release candidate for 1.0.0.

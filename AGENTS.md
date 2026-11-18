@@ -22,7 +22,7 @@ Larder is a self-hosted write-through package cache written in Go. The specifica
 
 ## Engineering rules (details in `docs/07-engineering/coding-standards.md`)
 
-- Go 1.23 or newer, `CGO_ENABLED=0`, standard library first.
+- Go 1.27 or newer, `CGO_ENABLED=0`, standard library first.
 - Stream bodies; memory must not grow with object size.
 - No global mutable state; pass dependencies in; time through a `Clock` interface.
 - Wrap errors with context; never ignore errors from `Close`, `Sync`, `Rename` on written files.

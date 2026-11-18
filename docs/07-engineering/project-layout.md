@@ -1,6 +1,6 @@
 # Project layout
 
-Go module `github.com/<owner>/larder` (Go 1.23 or newer). Linux server target; `CGO_ENABLED=0`.
+Go module `github.com/mmrzaf/larder` (Go 1.27 or newer). Linux server target; `CGO_ENABLED=0`.
 
 ```
 larder/
@@ -55,4 +55,4 @@ larder/
 
 ## Build
 
-`Makefile` targets: `build`, `test`, `race`, `vet`, `fmt`, `cover`, `docker`, `e2e` (real clients, opt in), `release` (static linux amd64 and arm64 with `-trimpath` and version ldflags), `clean`.
+`Makefile` targets: `build`, `test`, `race`, `vet`, `fmt`, `cover`, `docker`, `acceptance` (real clients), `ci`, `release` (static linux amd64 and arm64 with `-trimpath` and version ldflags), `clean`.

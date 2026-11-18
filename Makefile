@@ -1,6 +1,6 @@
 MODULE := github.com/mmrzaf/larder
 # The version comes from the nearest tag; "dev" outside a tagged checkout.
-VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null | sed 's/^v//' || echo dev)
+VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null | sed 's/^v//' | grep . || echo dev)
 COMMIT ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo none)
 # The build date is the commit date, so rebuilding a commit gives the same binary.
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || echo 0)
