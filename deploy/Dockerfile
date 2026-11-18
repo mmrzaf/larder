@@ -1,4 +1,5 @@
-FROM golang:1.27-alpine AS build
+ARG GO_IMAGE=golang:1.27-alpine
+FROM ${GO_IMAGE} AS build
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY} \
     GOTOOLCHAIN=local
@@ -14,7 +15,7 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false \
     -o /out/larder ./cmd/larder
 RUN mkdir -p /out/data /out/etc/larder
 
-FROM gcr.io/distroless/static-debian12
+FROM scratch
 ARG VERSION=dev
 ARG COMMIT=none
 LABEL org.opencontainers.image.title="Larder" \
@@ -22,6 +23,8 @@ LABEL org.opencontainers.image.title="Larder" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
+# The binary is static; only the trust bundle is needed from the builder.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/larder /larder
 COPY --from=build --chown=10001:10001 /out/data /data
 COPY --from=build /out/etc/larder /etc/larder

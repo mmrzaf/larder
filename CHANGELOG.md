@@ -10,6 +10,8 @@ interfaces and behaviors.
 - Align engineering documentation with the Go toolchain required by `go.mod`.
 - Wait for the fake upstream and allocate distinct ports in the offline drill self-test.
 - Retry the Alpine concurrent acceptance probe on transient CDN transport errors.
+- Run the release image from `scratch` with the CA bundle from the builder, so the build needs no `gcr.io` runtime image.
+- Forward `GO_IMAGE` and `GOPROXY` to the image build for mirror-only networks.
 
 ## [1.0.0-rc.2] - 2026-11-17
 

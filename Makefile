@@ -7,6 +7,7 @@ SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || echo 0)
 DATE ?= $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 IMAGE ?= larder
 GO ?= go
+GO_IMAGE ?= golang:1.27-alpine
 GOPROXY ?= https://proxy.golang.org,direct
 LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Version=$(VERSION) \
@@ -38,6 +39,7 @@ cover:
 
 docker:
 	docker build -f deploy/Dockerfile \
+		--build-arg GO_IMAGE=$(GO_IMAGE) \
 		--build-arg GOPROXY=$(GOPROXY) \
 		--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) \
 		-t $(IMAGE):$(VERSION) .

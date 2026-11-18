@@ -950,9 +950,10 @@ suite_diskfull() {
 	log "diskfull: Larder on an 8 MiB filesystem"
 	require docker curl
 	local image=${DISTROS%% *}
-	# The container that runs Larder needs CA certificates, which the release
-	# image has and plain distribution images do not.
-	local larder_image=gcr.io/distroless/static-debian12
+	# The container that runs Larder needs CA certificates. The Python image
+	# already used by the pypi suite has them; the production image carries the
+	# same bundle from its build stage.
+	local larder_image=python:3.12-slim
 	write_apt_client
 	docker pull -q "$image" >/dev/null || die "cannot pull $image"
 	docker pull -q "$larder_image" >/dev/null || die "cannot pull $larder_image"
