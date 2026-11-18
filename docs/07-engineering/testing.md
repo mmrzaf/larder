@@ -69,6 +69,7 @@ Benchmarks for: hit path (blob serve), classification, packument rewrite of a 10
 The Docker image consistency test uses an ephemeral local module proxy backed by
 `go env GOMODCACHE` when `GOPROXY` is not explicitly set. This exercises the
 production Dockerfile without requiring a second public Go-module download
-when the host already has the modules cached. Set `GOPROXY` explicitly to
-exercise another module proxy; the image build still requires Docker access to
+when the host already has the modules cached. `make docker` forwards `GOPROXY`
+to the image build, so a reachable proxy can be supplied when
+`proxy.golang.org` is blocked. The image build still requires Docker access to
 its base images.
