@@ -12,6 +12,7 @@ interfaces and behaviors.
 - Retry the Alpine concurrent acceptance probe on transient CDN transport errors.
 - Run the release image from `scratch` with the CA bundle from the builder, so the build needs no `gcr.io` runtime image.
 - Forward `GO_IMAGE` and `GOPROXY` to the image build for mirror-only networks.
+- Fall back to the configured module proxy in the Docker image consistency test when a module is not cached locally.
 
 ## [1.0.0-rc.2] - 2026-11-17
 
