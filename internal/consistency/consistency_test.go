@@ -6,6 +6,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -279,14 +281,41 @@ func TestMatrix_O01_DockerImage(t *testing.T) {
 	root := repositoryRoot(t)
 	name := "larder-o01-test"
 	buildArgs := []string{"build", "-f", "deploy/Dockerfile", "-t", name}
-	// Builders behind an HTTP proxy need it inside the build as well.
-	if proxy := os.Getenv("HTTPS_PROXY"); proxy != "" {
-		buildArgs = append(buildArgs, "--network=host", "--build-arg", "HTTPS_PROXY="+proxy, "--build-arg", "HTTP_PROXY="+proxy)
+	// The host has already fetched the module archives while building and
+	// testing Larder. Reuse those exact archives instead of depending on an
+	// additional public-module-proxy request inside Docker.
+	moduleProxy := os.Getenv("GOPROXY")
+	useHostNetwork := false
+	if moduleProxy == "" {
+		moduleCache, err := exec.Command("go", "env", "GOMODCACHE").Output()
+		if err != nil {
+			t.Fatalf("locate Go module cache: %v", err)
+		}
+		cacheDir := filepath.Join(strings.TrimSpace(string(moduleCache)), "cache", "download")
+		info, err := os.Stat(cacheDir)
+		if err != nil {
+			t.Fatalf("Go module download cache unavailable at %s: %v", cacheDir, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("Go module download cache path is not a directory: %s", cacheDir)
+		}
+		proxy := httptest.NewServer(http.FileServer(http.Dir(cacheDir)))
+		t.Cleanup(proxy.Close)
+		moduleProxy = proxy.URL
+		useHostNetwork = true
 	}
-	// A restricted network reaches the Go modules through its own proxy, as
-	// the deployment pipeline does.
-	if proxy := os.Getenv("GOPROXY"); proxy != "" {
-		buildArgs = append(buildArgs, "--build-arg", "GOPROXY="+proxy)
+	buildArgs = append(buildArgs, "--build-arg", "GOPROXY="+moduleProxy)
+	// Keep proxy settings available to RUN instructions inside the image.
+	if proxy := os.Getenv("HTTPS_PROXY"); proxy != "" {
+		buildArgs = append(buildArgs, "--build-arg", "HTTPS_PROXY="+proxy)
+		useHostNetwork = true
+	}
+	if proxy := os.Getenv("HTTP_PROXY"); proxy != "" {
+		buildArgs = append(buildArgs, "--build-arg", "HTTP_PROXY="+proxy)
+		useHostNetwork = true
+	}
+	if useHostNetwork {
+		buildArgs = append(buildArgs, "--network=host")
 	}
 	build := func() ([]byte, error) {
 		command := exec.Command("docker", append(append([]string{}, buildArgs...), ".")...)
@@ -355,19 +384,48 @@ func TestMatrix_O02_ComposeConfig(t *testing.T) {
 	}
 }
 
-func TestMatrix_O03_OfflineDrill(t *testing.T) {
-	root := repositoryRoot(t)
-	command := exec.Command("sh", "scripts/offline-drill.sh", "--self-test")
-	command.Dir = root
-	command.Env = append(os.Environ(), "LARDER_BIN="+filepath.Join(t.TempDir(), "larder"))
+func runOfflineDrill(t *testing.T, env ...string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	command = exec.CommandContext(ctx, command.Path, command.Args[1:]...)
-	command.Dir = root
+	command := exec.CommandContext(ctx, "sh", "scripts/offline-drill.sh", "--self-test")
+	command.Dir = repositoryRoot(t)
 	command.Env = append(os.Environ(), "LARDER_BIN="+filepath.Join(t.TempDir(), "larder"))
+	command.Env = append(command.Env, env...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("offline drill: %v\n%s", err, output)
 	}
+}
+
+func TestMatrix_O03_OfflineDrill(t *testing.T) {
+	runOfflineDrill(t)
+}
+
+// The drill starts its fake upstream in the background; the first warm must
+// wait for it instead of racing its startup and failing on a refused connection.
+func TestMatrix_O03_OfflineDrillSlowUpstream(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required by the offline drill")
+	}
+	binDir := t.TempDir()
+	wrapper := `#!/bin/sh
+for arg in "$@"; do
+    if [ "$arg" = "http.server" ]; then
+        sleep 1
+        break
+    fi
+done
+exec "` + python + `" "$@"
+`
+	path := filepath.Join(binDir, "python3")
+	if err := os.WriteFile(path, []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runOfflineDrill(t, "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestMatrix_O05_RepositoryHygiene(t *testing.T) {

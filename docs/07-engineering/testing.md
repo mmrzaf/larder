@@ -7,7 +7,7 @@
 | Unit | functions and packages: classification tables, parsers, rewriting, eviction ordering, config validation | none |
 | Integration | engine plus store plus index plus fake upstreams through the real HTTP handler | loopback only |
 | End to end | `larder serve` subprocess plus CLI commands against fake upstreams | loopback only |
-| Acceptance (release gate) | real `npm`, `pip`, `apt` and `apk` clients, in clean containers or with clean caches, against a real Larder binary and real registries | internet, Docker, Node; nothing may be skipped |
+| Real-client acceptance | real `npm`, `pip`, `apt` and `apk` clients, in clean containers or with clean caches, against a real Larder binary and real registries; the release workflow gates npm only | internet, Docker, Node; nothing may be skipped in selected suites |
 | Real client (opt in) | real `go`, `pip`, `cargo`, `gradle`, `rustup` and others against a running Larder with real or fake upstreams | optional, `LARDER_E2E=1` |
 
 Hermetic levels run in `go test ./...` with no internet access.
@@ -56,6 +56,8 @@ Every client is forced through Larder: npm runs with a dead HTTP(S) proxy and ap
 
 What the suite cannot cover: repository publication racing a client against the real archives (covered by hermetic tests and `by-hash` behaviour only), real `Valid-Until` expiry, other architectures than the ones listed, and clients other than npm 11 and apt as shipped in the listed images.
 
+The cold-cache concurrent probes depend on public registries. The Alpine probe repeats at most three times when Larder's log records a transport error to the CDN (handshake timeout, refused connection, or I/O timeout); any other failure stops the suite. Every attempt starts with an empty data directory, so a retry still exercises four clients sharing one cold cache.
+
 ## Real client checks (`scripts/e2e-real.sh`)
 
 For each tool installed on the machine, the script starts Larder against real upstreams, runs a minimal fetch with the tool configured as in [client setup](../05-configuration/client-setup.md), repeats it with Larder offline, and compares outputs. Tools not installed are skipped with a message, which is why it is **not** an acceptance gate: a skip is not a pass. This catches protocol details that fakes cannot (for example how `rustup` rewrites manifest URLs and how `cargo` reads `config.json`).
@@ -63,3 +65,11 @@ For each tool installed on the machine, the script starts Larder against real up
 ## Performance checks
 
 Benchmarks for: hit path (blob serve), classification, packument rewrite of a 10 MB document, apt `Packages` ingest of a large file. The hit path must serve from disk without database writes (access times are buffered). Memory during a 1 GiB download must stay flat (streamed).
+
+The Docker image consistency test uses an ephemeral local module proxy backed by
+`go env GOMODCACHE` when `GOPROXY` is not explicitly set. This exercises the
+production Dockerfile without requiring a second public Go-module download
+when the host already has the modules cached. `make docker` forwards `GOPROXY`
+and `GO_IMAGE` to the image build, so reachable mirrors can be supplied when
+`proxy.golang.org` or Docker Hub is blocked. The runtime stage is `scratch`
+with the CA bundle copied from the builder, so no runtime image is pulled.

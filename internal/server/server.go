@@ -494,9 +494,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.shutdownErr
 }
 
-// Handler is an alias for PublicHandler.
-func (s *Server) Handler() http.Handler { return s.PublicHandler() }
-
 // PublicHandler returns the public listener handler.
 func (s *Server) PublicHandler() http.Handler {
 	return http.HandlerFunc(s.handlePublic)

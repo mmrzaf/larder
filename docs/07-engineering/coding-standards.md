@@ -2,7 +2,7 @@
 
 ## Language and style
 
-- Go 1.23 or newer. `gofmt` formatting, `go vet` clean.
+- Go 1.27 or newer. `gofmt` formatting, `go vet` clean.
 - Standard library first. Add a dependency only if it appears in [dependencies](dependencies.md).
 - Package names short and lower case; no stutter (`store.Store` is acceptable, `store.StoreBlob` is not).
 - Exported identifiers have doc comments that describe behaviour. Unexported helpers are commented only when the reason is not obvious.

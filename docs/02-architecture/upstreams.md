@@ -59,4 +59,4 @@ System roots by default; `ca_file` adds extra roots. There is no option to skip 
 
 ## Outbound identity
 
-User agent `larder/<version> (+https://github.com/<owner>/larder)`; the repository URL is set at build time. No client headers are forwarded except `Accept` (where a kind requires it).
+User agent `larder/<version> (+https://github.com/mmrzaf/larder)`; the version is set at build time. No client headers are forwarded except `Accept` (where a kind requires it).
