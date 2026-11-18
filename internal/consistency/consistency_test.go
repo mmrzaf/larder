@@ -282,11 +282,16 @@ func TestMatrix_O01_DockerImage(t *testing.T) {
 	name := "larder-o01-test"
 	buildArgs := []string{"build", "-f", "deploy/Dockerfile", "-t", name}
 	// The host has already fetched the module archives while building and
-	// testing Larder. Reuse those exact archives instead of depending on an
-	// additional public-module-proxy request inside Docker.
+	// testing Larder. Serve those archives first so the build does not need a
+	// second download, and fall back to the configured proxy for modules the
+	// host has not cached (for example dependencies of another platform).
 	moduleProxy := os.Getenv("GOPROXY")
 	useHostNetwork := false
 	if moduleProxy == "" {
+		configured, err := exec.Command("go", "env", "GOPROXY").Output()
+		if err != nil {
+			t.Fatalf("locate the configured module proxy: %v", err)
+		}
 		moduleCache, err := exec.Command("go", "env", "GOMODCACHE").Output()
 		if err != nil {
 			t.Fatalf("locate Go module cache: %v", err)
@@ -301,7 +306,7 @@ func TestMatrix_O01_DockerImage(t *testing.T) {
 		}
 		proxy := httptest.NewServer(http.FileServer(http.Dir(cacheDir)))
 		t.Cleanup(proxy.Close)
-		moduleProxy = proxy.URL
+		moduleProxy = proxy.URL + "," + strings.TrimSpace(string(configured))
 		useHostNetwork = true
 	}
 	buildArgs = append(buildArgs, "--build-arg", "GOPROXY="+moduleProxy)
