@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.2] - 2026-11-27
+
+- Verify a blob file that already exists at its digest path before using it; a zero-length or damaged file is replaced with the bytes just written instead of becoming the metadata for the object.
+- Reject empty bodies before a blob file or index row is created.
+- Publish the blob row, the object row and the reference count in one transaction, and serialise writers with a bounded retry when the index is locked.
+- Treat inconsistent blob metadata as damage: quarantine the file, drop the objects and refetch on the next request. A response is never completed with fewer bytes than its `Content-Length`.
+- Report object counts for corrupt blobs in `larder verify --dry-run`.
+
 ## [1.0.1] - 2026-11-18
 
 - Fall back to the configured module proxy in the Docker image consistency test when a module is not cached locally.
