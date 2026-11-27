@@ -40,6 +40,16 @@ Order of use when committing an immutable object:
 
 `verified = 0` objects are still served. The `X-Larder-Verified` header reports the state. A configuration flag `require_verified` (per repo, default false) makes Larder reject unverified immutable objects, for environments that prefer failing to serving unchecked content.
 
+## Stored metadata
+
+The index describes the bytes on disk. A blob row is written in the same transaction as the object that references it, and it must satisfy:
+
+- `raw_size > 0` and `stored_size > 0` for every served object;
+- identity storage has `stored_size == raw_size`;
+- `stored_encoding` is a known value.
+
+Every serve checks these rules and the size of the opened file against `stored_size` before writing response headers. A violation takes the same path as a missing blob: the row and its objects are removed, the file is quarantined, and the content is fetched again. A response is never completed with fewer bytes than its `Content-Length`.
+
 ## Re-published versions
 
 If a registry changes the bytes behind an existing version, a new document will declare a digest that disagrees with an object that was already **verified** against the earlier digest. In that case:

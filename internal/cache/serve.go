@@ -107,6 +107,12 @@ const (
 )
 
 func (e *Engine) checkStored(rt *repoRuntime, object index.Object, blob index.Blob) storedState {
+	if err := blobSane(blob); err != nil {
+		e.logger.Error("verify_failed", "repo", rt.cfg.Name, "key", object.Key,
+			"sha256", object.SHA256, "reason", "metadata", "error", err)
+		e.verifyFailure(rt.cfg.Name)
+		return storedBroken
+	}
 	size, err := e.store.SizeOnDisk(object.SHA256)
 	if err != nil {
 		e.logger.Error("verify_failed", "repo", rt.cfg.Name, "key", object.Key,
@@ -125,6 +131,28 @@ func (e *Engine) checkStored(rt *repoRuntime, object index.Object, blob index.Bl
 		return storedBroken
 	}
 	return storedOK
+}
+
+// blobSane reports whether the row describes a non-empty file whose sizes are
+// self-consistent. A row that fails this check is treated as damaged even when
+// the file on disk happens to match the recorded stored size.
+func blobSane(blob index.Blob) error {
+	if blob.RawSize <= 0 {
+		return fmt.Errorf("raw size is %d", blob.RawSize)
+	}
+	if blob.StoredSize <= 0 {
+		return fmt.Errorf("stored size is %d", blob.StoredSize)
+	}
+	switch blob.StoredEnc {
+	case "identity":
+		if blob.StoredSize != blob.RawSize {
+			return fmt.Errorf("identity stored size %d differs from raw size %d", blob.StoredSize, blob.RawSize)
+		}
+	case "gzip":
+	default:
+		return fmt.Errorf("unknown encoding %q", blob.StoredEnc)
+	}
+	return nil
 }
 
 // storedIntact reports whether the blob behind an object can be served. When
@@ -166,6 +194,11 @@ func (e *Engine) serveRewritten(ctx context.Context, rt *repoRuntime, plan kinds
 		writeError(w, http.StatusInternalServerError, cache, "blob unavailable")
 		return
 	}
+	if reader.StoredSize() != blob.StoredSize {
+		_ = reader.Close()
+		writeError(w, http.StatusInternalServerError, cache, "stored object size changed")
+		return
+	}
 	limit := e.cfg.Limits.MaxParseBytes.Bytes()
 	raw, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	closeErr := reader.Close()
@@ -197,7 +230,9 @@ func (e *Engine) serveRewritten(ctx context.Context, rt *repoRuntime, plan kinds
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(rewritten)
+	if n, err := w.Write(rewritten); err != nil || n != len(rewritten) {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (e *Engine) serveBlob(w http.ResponseWriter, r *http.Request, object index.Object, blob index.Blob, cache string, stale bool) {
@@ -226,7 +261,10 @@ func (e *Engine) serveBlob(w http.ResponseWriter, r *http.Request, object index.
 			if r.Method == http.MethodHead {
 				return
 			}
-			_, _ = io.Copy(w, reader)
+			n, err := io.Copy(w, reader)
+			if err != nil || n != length {
+				panic(http.ErrAbortHandler)
+			}
 			return
 		}
 	}
@@ -238,6 +276,11 @@ func (e *Engine) serveBlob(w http.ResponseWriter, r *http.Request, object index.
 			return
 		}
 		defer func() { _ = file.Close() }()
+		info, err := file.Stat()
+		if err != nil || info.Size() != blob.StoredSize {
+			writeError(w, http.StatusInternalServerError, cache, "stored object size changed")
+			return
+		}
 		w.Header().Set("Content-Encoding", "gzip")
 		addVary(w.Header(), "Accept-Encoding")
 		w.Header().Set("Content-Length", strconv.FormatInt(blob.StoredSize, 10))
@@ -247,7 +290,10 @@ func (e *Engine) serveBlob(w http.ResponseWriter, r *http.Request, object index.
 		if r.Method == http.MethodHead {
 			return
 		}
-		_, _ = io.Copy(w, file)
+		n, err := io.Copy(w, file)
+		if err != nil || n != blob.StoredSize {
+			panic(http.ErrAbortHandler)
+		}
 		return
 	}
 
@@ -257,6 +303,10 @@ func (e *Engine) serveBlob(w http.ResponseWriter, r *http.Request, object index.
 		return
 	}
 	defer func() { _ = reader.Close() }()
+	if reader.StoredSize() != blob.StoredSize {
+		writeError(w, http.StatusInternalServerError, cache, "stored object size changed")
+		return
+	}
 	w.Header().Set("Content-Length", strconv.FormatInt(blob.RawSize, 10))
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("X-Larder-Cache", cache)
@@ -264,7 +314,10 @@ func (e *Engine) serveBlob(w http.ResponseWriter, r *http.Request, object index.
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = io.Copy(w, reader)
+	n, err := io.Copy(w, reader)
+	if err != nil || n != blob.RawSize {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (e *Engine) setStoredHeaders(w http.ResponseWriter, rt *repoRuntime, plan kinds.Plan, key string, object index.Object, cache string, stale bool) {

@@ -50,6 +50,7 @@ Every scenario has an ID and exists as a test named `TestMatrix_<ID>_<Descriptio
 | C42 | `require_verified: true` | unverified immutable object rejected with 502 |
 | C43 | stale-while-revalidate window | stale served immediately, background refresh updates the object |
 | C44 | host routing | repo chosen by `Host`; rewritten URLs use the repo's public URL |
+| C45 | 30 parallel fetches of distinct artifacts | every body correct; every blob verifies clean; no empty or inconsistent row |
 
 ## Storage management (S)
 
@@ -75,6 +76,7 @@ Every scenario has an ID and exists as a test named `TestMatrix_<ID>_<Descriptio
 | S18 | GC concurrency | reads during GC succeed; two GC runs never overlap |
 | S19 | snapshot and restore | restored index plus `reindex --fix` gives a consistent store |
 | S20 | rollback | previous generation becomes current |
+| S21 | a write lock held by another connection | the writer retries with backoff and succeeds; a failed publish leaves no rows |
 
 ## Go (G)
 
@@ -194,7 +196,7 @@ Every scenario has an ID and exists as a test named `TestMatrix_<ID>_<Descriptio
 | L12 | `ingest` for go and maven fixture trees | stored without upstream; mutable files skipped |
 | L13 | `export` tree then serve with a static server | clients can fetch; rewritten documents use `--base-url` |
 | L14 | `import` of an export | objects restored and verified |
-| L15 | `verify`, `reindex`, `snapshot` | as specified, including `--repair` |
+| L15 | `verify`, `reindex`, `snapshot` | as specified, including `--repair` and dry-run object counts |
 | L16 | exit codes | as documented |
 | L17 | `healthcheck` | exit 0 when ready, 1 otherwise |
 
@@ -227,6 +229,9 @@ Every scenario has an ID and exists as a test named `TestMatrix_<ID>_<Descriptio
 | F14 | storing a response fails locally | no other upstream is tried and no upstream is charged |
 | F15 | a metadata document does not fit in the free space | streamed with `BYPASS`, not stored |
 | F16 | the request fetching a key reports twice, as a deferred release after a panic would | the first report stands, waiters are released and the key is free again |
+| F17 | a blob row records a non-empty raw size with zero stored bytes and an empty file | the entry is discarded and refetched; never a 200 with a short body |
+| F18 | a zero-length or damaged file already sits at the digest path | the commit hashes it, replaces it with the verified bytes and records consistent metadata; an empty body is never published |
+| F19 | the index write fails after the blob is written | no object becomes visible; the rows are absent until a later publish succeeds |
 
 ## Operations (O)
 

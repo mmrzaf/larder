@@ -102,6 +102,7 @@ func (db *DB) BlobCount(ctx context.Context) (int64, error) {
 func (db *DB) DeleteBlobAndObjects(ctx context.Context, sha string) ([]ObjectRef, error) {
 	var refs []ObjectRef
 	err := db.withTx(ctx, func(tx *sql.Tx) error {
+		var out []ObjectRef
 		rows, err := tx.QueryContext(ctx,
 			`SELECT repo, key, generation, sha256, current FROM objects WHERE sha256 = ? ORDER BY repo, key, generation`, sha)
 		if err != nil {
@@ -115,7 +116,7 @@ func (db *DB) DeleteBlobAndObjects(ctx context.Context, sha string) ([]ObjectRef
 				return fmt.Errorf("scan object for blob %s: %w", sha, err)
 			}
 			ref.Current = current == 1
-			refs = append(refs, ref)
+			out = append(out, ref)
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
@@ -130,6 +131,7 @@ func (db *DB) DeleteBlobAndObjects(ctx context.Context, sha string) ([]ObjectRef
 		if _, err := tx.ExecContext(ctx, `DELETE FROM blobs WHERE sha256 = ?`, sha); err != nil {
 			return fmt.Errorf("delete blob %s: %w", sha, err)
 		}
+		refs = out
 		return nil
 	})
 	if err != nil {
@@ -173,7 +175,7 @@ func (db *DB) RefcountMismatches(ctx context.Context) ([]RefcountMismatch, error
 
 // RecomputeRefcounts sets every blob refcount from its object rows.
 func (db *DB) RecomputeRefcounts(ctx context.Context) error {
-	if _, err := db.sql.ExecContext(ctx,
+	if _, err := db.execWrite(ctx,
 		`UPDATE blobs SET refcount = (
 			SELECT COUNT(*) FROM objects WHERE objects.sha256 = blobs.sha256
 		)`); err != nil {
@@ -272,7 +274,7 @@ func (db *DB) ExpectationOrphanCount(ctx context.Context) (int64, error) {
 
 // DeleteExpectationOrphans removes expectations without a current object.
 func (db *DB) DeleteExpectationOrphans(ctx context.Context) (int64, error) {
-	res, err := db.sql.ExecContext(ctx,
+	res, err := db.execWrite(ctx,
 		`DELETE FROM expectations
 		 WHERE NOT EXISTS (
 			SELECT 1 FROM objects o WHERE o.repo = expectations.repo AND o.key = expectations.key AND o.current = 1

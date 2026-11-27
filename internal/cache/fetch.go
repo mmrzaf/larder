@@ -178,6 +178,10 @@ func (e *Engine) storeImmutableResponse(ctx context.Context, rt *repoRuntime, pl
 		abort()
 		return index.Object{}, index.Blob{}, resp.Upstream, false, wrote, deferred.err
 	}
+	if writer.RawSize() == 0 {
+		abort()
+		return index.Object{}, index.Blob{}, resp.Upstream, false, wrote, errEmptyBody
+	}
 	file := writer.TempFile()
 	if file == nil {
 		abort()
@@ -263,9 +267,6 @@ func (e *Engine) storeImmutableResponse(ctx context.Context, rt *repoRuntime, pl
 			}
 			return err
 		}
-		if blob.RawSize == 0 {
-			return errEmptyBody
-		}
 		indexBlob = index.Blob{
 			SHA256:     blob.SHA256,
 			RawSize:    blob.RawSize,
@@ -273,10 +274,7 @@ func (e *Engine) storeImmutableResponse(ctx context.Context, rt *repoRuntime, pl
 			StoredEnc:  string(blob.StoredEnc),
 			CreatedAt:  now,
 		}
-		if err := e.index.PutBlob(ctx, indexBlob); err != nil {
-			return err
-		}
-		object, err = e.index.PutObject(ctx, index.PutObjectParams{
+		object, err = e.index.PublishObject(ctx, indexBlob, index.PutObjectParams{
 			Repo:         rt.cfg.Name,
 			Key:          key,
 			Class:        "immutable",
@@ -357,13 +355,10 @@ func (e *Engine) storeCompanion(ctx context.Context, rt *repoRuntime, artifactPa
 		if err != nil {
 			return err
 		}
-		if err := e.index.PutBlob(ctx, index.Blob{
+		_, err = e.index.PublishObject(ctx, index.Blob{
 			SHA256: blob.SHA256, RawSize: blob.RawSize, StoredSize: blob.StoredSize,
 			StoredEnc: string(blob.StoredEnc), CreatedAt: now,
-		}); err != nil {
-			return err
-		}
-		_, err = e.index.PutObject(ctx, index.PutObjectParams{
+		}, index.PutObjectParams{
 			Repo: rt.cfg.Name, Key: key, Class: "immutable", SHA256: blob.SHA256,
 			ContentType: "text/plain; charset=utf-8", Upstream: upstreamName,
 			FetchedAt: now, ValidatedAt: now, Verified: true,
@@ -539,6 +534,10 @@ func (e *Engine) storeMutableResponse(ctx context.Context, rt *repoRuntime, plan
 		_ = writer.Abort()
 		return index.Object{}, index.Blob{}, "", false, false, fmt.Errorf("stream mutable body: %w", err)
 	}
+	if writer.RawSize() == 0 {
+		_ = writer.Abort()
+		return index.Object{}, index.Blob{}, "", false, false, errEmptyBody
+	}
 	if plan.Hooks.Validate != nil {
 		file := writer.TempFile()
 		if file == nil {
@@ -567,17 +566,11 @@ func (e *Engine) storeMutableResponse(ctx context.Context, rt *repoRuntime, plan
 			}
 			return err
 		}
-		if blob.RawSize == 0 {
-			return errEmptyBody
-		}
 		indexBlob = index.Blob{
 			SHA256: blob.SHA256, RawSize: blob.RawSize, StoredSize: blob.StoredSize,
 			StoredEnc: string(blob.StoredEnc), CreatedAt: now,
 		}
-		if err := e.index.PutBlob(ctx, indexBlob); err != nil {
-			return err
-		}
-		object, err = e.index.PutObject(ctx, index.PutObjectParams{
+		object, err = e.index.PublishObject(ctx, indexBlob, index.PutObjectParams{
 			Repo: rt.cfg.Name, Key: key, Class: "mutable", SHA256: blob.SHA256,
 			ContentType: contentType, ETag: resp.Header.Get("ETag"),
 			LastModified: resp.Header.Get("Last-Modified"), Upstream: resp.Upstream,
@@ -1082,7 +1075,7 @@ func localError(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, store.ErrDigestMismatch), errors.Is(err, store.ErrLengthMismatch),
-		errors.Is(err, store.ErrTooLarge), errors.Is(err, errEmptyBody):
+		errors.Is(err, store.ErrTooLarge), errors.Is(err, store.ErrEmpty), errors.Is(err, errEmptyBody):
 		return err
 	}
 	return &upstream.LocalError{Err: err}

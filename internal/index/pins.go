@@ -16,7 +16,7 @@ func (db *DB) CreatePinSet(ctx context.Context, set PinSet) error {
 	if set.CreatedAt.IsZero() {
 		return fmt.Errorf("create pin set %s: created_at is required", set.Name)
 	}
-	if _, err := db.sql.ExecContext(ctx,
+	if _, err := db.execWrite(ctx,
 		`INSERT INTO pin_sets (name, created_at, note) VALUES (?, ?, ?)`,
 		set.Name, unixTime(set.CreatedAt), set.Note,
 	); err != nil {
@@ -27,7 +27,7 @@ func (db *DB) CreatePinSet(ctx context.Context, set PinSet) error {
 
 // DeletePinSet deletes a set and its members.
 func (db *DB) DeletePinSet(ctx context.Context, name string) error {
-	res, err := db.sql.ExecContext(ctx, `DELETE FROM pin_sets WHERE name = ?`, name)
+	res, err := db.execWrite(ctx, `DELETE FROM pin_sets WHERE name = ?`, name)
 	if err != nil {
 		return fmt.Errorf("delete pin set %s: %w", name, err)
 	}
@@ -73,7 +73,7 @@ func (db *DB) AddPinItem(ctx context.Context, item PinItem) error {
 	if item.SetName == "" || item.Repo == "" || item.Key == "" {
 		return fmt.Errorf("add pin item: set, repo and key are required")
 	}
-	if _, err := db.sql.ExecContext(ctx,
+	if _, err := db.execWrite(ctx,
 		`INSERT INTO pin_items (set_name, repo, key) VALUES (?, ?, ?)`,
 		item.SetName, item.Repo, item.Key,
 	); err != nil {
@@ -84,7 +84,7 @@ func (db *DB) AddPinItem(ctx context.Context, item PinItem) error {
 
 // RemovePinItem unpins one exact key.
 func (db *DB) RemovePinItem(ctx context.Context, item PinItem) error {
-	res, err := db.sql.ExecContext(ctx,
+	res, err := db.execWrite(ctx,
 		`DELETE FROM pin_items WHERE set_name = ? AND repo = ? AND key = ?`,
 		item.SetName, item.Repo, item.Key)
 	if err != nil {
@@ -105,7 +105,7 @@ func (db *DB) AddPinRule(ctx context.Context, rule PinRule) error {
 	if rule.SetName == "" || rule.Repo == "" || rule.Pattern == "" {
 		return fmt.Errorf("add pin rule: set, repo and pattern are required")
 	}
-	if _, err := db.sql.ExecContext(ctx,
+	if _, err := db.execWrite(ctx,
 		`INSERT INTO pin_rules (set_name, repo, pattern) VALUES (?, ?, ?)`,
 		rule.SetName, rule.Repo, rule.Pattern,
 	); err != nil {
@@ -116,7 +116,7 @@ func (db *DB) AddPinRule(ctx context.Context, rule PinRule) error {
 
 // RemovePinRule removes one glob rule.
 func (db *DB) RemovePinRule(ctx context.Context, rule PinRule) error {
-	res, err := db.sql.ExecContext(ctx,
+	res, err := db.execWrite(ctx,
 		`DELETE FROM pin_rules WHERE set_name = ? AND repo = ? AND pattern = ?`,
 		rule.SetName, rule.Repo, rule.Pattern)
 	if err != nil {

@@ -235,15 +235,12 @@ func importReader(ctx context.Context, st *store.Store, idx *index.DB, entry Man
 	if err != nil {
 		return false, "", err
 	}
-	if err := idx.PutBlob(ctx, index.Blob{
-		SHA256: blob.SHA256, RawSize: blob.RawSize, StoredSize: blob.StoredSize,
-		StoredEnc: string(blob.StoredEnc), CreatedAt: now,
-	}); err != nil {
-		return false, "", err
-	}
 	fetched := parseTime(entry.FetchedAt, now)
 	validated := parseTime(entry.ValidatedAt, fetched)
-	if _, err := idx.PutObject(ctx, index.PutObjectParams{
+	if _, err := idx.PublishObject(ctx, index.Blob{
+		SHA256: blob.SHA256, RawSize: blob.RawSize, StoredSize: blob.StoredSize,
+		StoredEnc: string(blob.StoredEnc), CreatedAt: now,
+	}, index.PutObjectParams{
 		Repo: entry.Repo, Key: entry.Key, Class: entry.Class, SHA256: blob.SHA256,
 		ContentType: entry.ContentType, Upstream: "import",
 		FetchedAt: fetched, ValidatedAt: validated, Verified: entry.Verified,

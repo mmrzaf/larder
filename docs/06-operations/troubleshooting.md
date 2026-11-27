@@ -9,6 +9,7 @@ First step for any problem: `curl -sI <url>` and read the `X-Larder-*` headers, 
 | Requests slow when upstreams are down | circuits not yet open, or large `revalidate_timeout` | lower `timeouts.revalidate_total`; circuits open after 3 failures |
 | `X-Larder-Stale: 1` on everything | upstream unreachable | check `/_larder/v1/upstreams` and outbound proxy |
 | npm `EINTEGRITY` | upstream re-published a version, or a stored tarball differs from the new packument | log has `digest_conflict`; `larder objects npm <tarball key>`; evict the object and refetch if the new bytes are intended |
+| npm `EINTEGRITY` with `transfer closed with ... bytes remaining`, or a 200 with an empty body | a stored blob or its metadata is inconsistent | `larder verify -repo npm` then `larder verify -repo npm -repair`; the entry is quarantined and refetched automatically |
 | npm installs fetch from the registry host directly | packument not rewritten: client got a cached packument through another path, or `public_base_url` is wrong | check `dist.tarball` in the served packument; set `public_base_url` or `trust_forwarded` |
 | pip hash mismatch | stored file differs from lockfile hash | compare with `larder objects`; the file may have been re-uploaded upstream |
 | pip cannot find files | the index links point outside allowed hosts | check `files_hosts` and the upstream host list |
