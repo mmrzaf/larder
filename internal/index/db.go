@@ -11,9 +11,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 )
 
 var (
@@ -29,13 +30,49 @@ var (
 type DB struct {
 	sql  *sql.DB
 	path string
+
+	// writeMu serialises writers. SQLite admits one writer at a time, so
+	// queueing here avoids a pile of connections racing the same lock.
+	writeMu sync.Mutex
+	// attempts bounds retries of a write that lost the lock.
+	attempts int
+	sleep    func(context.Context, time.Duration) error
+}
+
+const (
+	defaultBusyTimeout = 5 * time.Second
+	defaultAttempts    = 3
+)
+
+type openOptions struct {
+	busyTimeout time.Duration
+	attempts    int
+	sleep       func(context.Context, time.Duration) error
 }
 
 // Open opens the database, applies migrations and verifies the schema version.
 func Open(path string) (*DB, error) {
+	return open(path, openOptions{
+		busyTimeout: defaultBusyTimeout,
+		attempts:    defaultAttempts,
+		sleep:       sleepContext,
+	})
+}
+
+func open(path string, opts openOptions) (*DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("index: database path is required")
 	}
+	if opts.busyTimeout <= 0 {
+		opts.busyTimeout = defaultBusyTimeout
+	}
+	if opts.attempts <= 0 {
+		opts.attempts = defaultAttempts
+	}
+	if opts.sleep == nil {
+		opts.sleep = sleepContext
+	}
+	busyMS := strconv.FormatInt(opts.busyTimeout.Milliseconds(), 10)
 
 	dsn := path
 	if path != ":memory:" {
@@ -48,7 +85,7 @@ func Open(path string) (*DB, error) {
 		}
 		u := url.URL{Scheme: "file", Path: abs}
 		q := u.Query()
-		q.Add("_pragma", "busy_timeout(5000)")
+		q.Add("_pragma", "busy_timeout("+busyMS+")")
 		q.Add("_pragma", "foreign_keys(1)")
 		q.Add("_pragma", "journal_mode(WAL)")
 		q.Add("_pragma", "synchronous(FULL)")
@@ -56,7 +93,7 @@ func Open(path string) (*DB, error) {
 		u.RawQuery = q.Encode()
 		dsn = u.String()
 	} else {
-		dsn = "file::memory:?cache=shared&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+		dsn = "file::memory:?cache=shared&_pragma=busy_timeout(" + busyMS + ")&_pragma=foreign_keys(1)"
 	}
 
 	database, err := sql.Open("sqlite", dsn)
@@ -66,7 +103,7 @@ func Open(path string) (*DB, error) {
 	database.SetMaxOpenConns(8)
 	database.SetMaxIdleConns(8)
 
-	db := &DB{sql: database, path: path}
+	db := &DB{sql: database, path: path, attempts: opts.attempts, sleep: opts.sleep}
 	if err := database.Ping(); err != nil {
 		_ = database.Close()
 		return nil, fmt.Errorf("ping index: %w", err)
@@ -160,18 +197,72 @@ func (db *DB) SchemaVersion(ctx context.Context) (int, error) {
 }
 
 func (db *DB) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := db.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	if err := fn(tx); err != nil {
-		_ = tx.Rollback()
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
+	return db.retry(ctx, func() error {
+		tx, err := db.sql.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		if err := fn(tx); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit transaction: %w", err)
+		}
+		return nil
+	})
+}
+
+// execWrite runs one write statement under the writer lock, retrying when the
+// database is busy.
+func (db *DB) execWrite(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
+	var result sql.Result
+	err := db.retry(ctx, func() error {
+		var err error
+		result, err = db.sql.ExecContext(ctx, query, args...)
 		return err
+	})
+	return result, err
+}
+
+func (db *DB) retry(ctx context.Context, op func() error) error {
+	for attempt := 0; ; attempt++ {
+		err := op()
+		if err == nil || !isBusy(err) || attempt+1 >= db.attempts {
+			return err
+		}
+		delay := time.Duration(50<<attempt) * time.Millisecond
+		if sleepErr := db.sleep(ctx, delay); sleepErr != nil {
+			return sleepErr
+		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transaction: %w", err)
+}
+
+func isBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
 	}
-	return nil
+	switch sqliteErr.Code() & 0xff {
+	case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED
+		return true
+	}
+	return false
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // Ping verifies that the database accepts a connection.

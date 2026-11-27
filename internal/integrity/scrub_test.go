@@ -91,6 +91,31 @@ func (f *scrubFixture) scrubber(t *testing.T) *Scrubber {
 	return scrubber
 }
 
+func TestMatrix_L15_DryRunReportsObjectCount(t *testing.T) {
+	f := newScrubFixture(t)
+	bad := f.add(t, "repo", "/bad", []byte("corrupt me"), false)
+	path, err := f.store.BlobPath(bad.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.scrubber(t).Scan(context.Background(), ScrubOptions{Sample: 100, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Corrupt != 1 || len(result.CorruptBlobs) != 1 {
+		t.Fatalf("dry run result = %+v", result)
+	}
+	if got := result.CorruptBlobs[0].Objects; got != 1 {
+		t.Fatalf("dry-run object count = %d, want 1", got)
+	}
+	if _, err := f.index.CurrentObject(context.Background(), "repo", "/bad"); err != nil {
+		t.Fatalf("dry run removed the object: %v", err)
+	}
+}
+
 func TestMatrix_S16_ScrubCorruption(t *testing.T) {
 	f := newScrubFixture(t)
 	bad := f.add(t, "repo", "/bad", []byte("corrupt me"), false)

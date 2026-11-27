@@ -27,6 +27,8 @@ The download is not tied to the first client's connection. If the client disconn
 
 Slow clients do not block fetches because the temp file is the source of truth for waiters.
 
+Commits that resolve to the same digest are serialised, so two downloads of the same content cannot disagree about the file or its metadata. Database writers are also serialised; readers continue concurrently under WAL.
+
 ## Failure behaviour
 
 | Failure | Result |
@@ -37,9 +39,9 @@ Slow clients do not block fetches because the temp file is the source of truth f
 | Process killed mid-download | Temp files are removed at the next start. Blob files are flushed and renamed before any index row refers to them, so no entry can point at an incomplete file. |
 | Disk full or storage error while writing | The candidate is discarded. When no client is being served, the request answers 500 (507 when the filesystem reports no space). When a client is already receiving the body, the download is completed for it and only the caching fails. The upstream circuit is not charged for local failures. |
 | Download larger than the free space | Admitted only if the free space, minus the bytes already promised to downloads in progress, stays above `hard_free_bytes`; otherwise streamed with `BYPASS` and not stored. |
-| Stored blob missing or its size differs from the index | The entry is dropped (the file is quarantined), the request is handled as a miss and fetched again. Offline, the request fails; a damaged blob is never served. |
+| Stored blob missing, or its metadata or on-disk size inconsistent | The entry is dropped (the file is quarantined), the request is handled as a miss and fetched again. Offline, the request fails; a damaged blob is never served. A body is never sent with a `Content-Length` the file cannot satisfy. |
 | Blob sweep (garbage collection, reconcile) during a download | Publication of a blob and removal of unreferenced blobs exclude each other, so a sweep cannot remove a blob that is about to be referenced. Garbage collection never removes pinned or referenced content. |
-| Index database locked | Retried with `busy_timeout`; persistent failure marks `/readyz` unhealthy but already-open serving continues from disk where possible. |
+| Index database locked | Writes are serialised through one writer; a lock held by another process is retried with bounded backoff on top of `busy_timeout`. Persistent failure marks `/readyz` unhealthy but already-open serving continues from disk where possible. |
 | Panic in a handler | Recovered, logged with stack trace, request answered 500; process continues. |
 | Config error on reload (SIGHUP) | Old configuration remains active; error logged. |
 

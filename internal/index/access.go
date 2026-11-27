@@ -201,7 +201,7 @@ func (db *DB) SetAccess(ctx context.Context, id int64, lastAccess time.Time, hit
 	if hits < 0 {
 		return fmt.Errorf("set access: hits must not be negative")
 	}
-	if _, err := db.sql.ExecContext(ctx,
+	if _, err := db.execWrite(ctx,
 		`UPDATE objects SET last_access = ?, hits = ? WHERE id = ?`,
 		unixTime(lastAccess), hits, id,
 	); err != nil {

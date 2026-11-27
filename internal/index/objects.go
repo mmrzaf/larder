@@ -11,34 +11,64 @@ import (
 
 var shaPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// PutBlob inserts a blob row. An existing row is left unchanged.
+// PutBlob inserts or refreshes a blob row. Existing metadata is corrected so
+// a stale row cannot outlive a validated file.
 func (db *DB) PutBlob(ctx context.Context, blob Blob) error {
+	blob, err := validateBlob(blob)
+	if err != nil {
+		return err
+	}
+	if _, err := db.execWrite(ctx, blobUpsert,
+		blob.SHA256, blob.RawSize, blob.StoredSize, blob.StoredEnc, unixTime(blob.CreatedAt),
+	); err != nil {
+		return fmt.Errorf("put blob %s: %w", blob.SHA256, err)
+	}
+	return nil
+}
+
+const blobUpsert = `INSERT INTO blobs (sha256, raw_size, stored_size, stored_enc, refcount, created_at)
+	VALUES (?, ?, ?, ?, 0, ?)
+	ON CONFLICT(sha256) DO UPDATE SET
+	  raw_size = excluded.raw_size,
+	  stored_size = excluded.stored_size,
+	  stored_enc = excluded.stored_enc`
+
+func validateBlob(blob Blob) (Blob, error) {
 	if !shaPattern.MatchString(blob.SHA256) {
-		return fmt.Errorf("put blob: invalid sha256 %q", blob.SHA256)
+		return Blob{}, fmt.Errorf("put blob: invalid sha256 %q", blob.SHA256)
 	}
 	if blob.RawSize < 0 || blob.StoredSize < 0 {
-		return fmt.Errorf("put blob %s: sizes must not be negative", blob.SHA256)
+		return Blob{}, fmt.Errorf("put blob %s: sizes must not be negative", blob.SHA256)
 	}
 	switch blob.StoredEnc {
 	case "", "identity":
 		blob.StoredEnc = "identity"
 	case "gzip":
 	default:
-		return fmt.Errorf("put blob %s: invalid encoding %q", blob.SHA256, blob.StoredEnc)
+		return Blob{}, fmt.Errorf("put blob %s: invalid encoding %q", blob.SHA256, blob.StoredEnc)
 	}
 	if blob.CreatedAt.IsZero() {
-		return fmt.Errorf("put blob %s: created_at is required", blob.SHA256)
+		return Blob{}, fmt.Errorf("put blob %s: created_at is required", blob.SHA256)
 	}
-	_, err := db.sql.ExecContext(ctx,
-		`INSERT INTO blobs (sha256, raw_size, stored_size, stored_enc, refcount, created_at)
-		 VALUES (?, ?, ?, ?, 0, ?)
-		 ON CONFLICT(sha256) DO NOTHING`,
-		blob.SHA256, blob.RawSize, blob.StoredSize, blob.StoredEnc, unixTime(blob.CreatedAt),
-	)
-	if err != nil {
-		return fmt.Errorf("put blob %s: %w", blob.SHA256, err)
+	if err := validateStoredMetadata(blob.RawSize, blob.StoredSize, blob.StoredEnc); err != nil {
+		return Blob{}, fmt.Errorf("put blob %s: %w", blob.SHA256, err)
 	}
-	return nil
+	return blob, nil
+}
+
+func validateStoredMetadata(rawSize, storedSize int64, enc string) error {
+	if rawSize < 0 || storedSize < 0 {
+		return fmt.Errorf("sizes must not be negative")
+	}
+	if rawSize > 0 && storedSize == 0 {
+		return fmt.Errorf("non-empty blob has no stored bytes")
+	}
+	switch enc {
+	case "identity", "gzip":
+		return nil
+	default:
+		return fmt.Errorf("invalid encoding %q", enc)
+	}
 }
 
 // GetBlob returns one blob row.
@@ -60,98 +90,156 @@ func (db *DB) BlobRefCount(ctx context.Context, sha string) (int64, error) {
 	return refcount, nil
 }
 
-// PutObject inserts the next generation or refreshes the current row when the digest is unchanged.
-func (db *DB) PutObject(ctx context.Context, p PutObjectParams) (Object, error) {
-	if p.Repo == "" || p.Key == "" {
-		return Object{}, fmt.Errorf("put object: repo and key are required")
+// ObjectCountForBlob returns the number of object generations that reference a blob.
+func (db *DB) ObjectCountForBlob(ctx context.Context, sha string) (int64, error) {
+	var count int64
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM objects WHERE sha256 = ?`, sha).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count objects for blob %s: %w", sha, err)
 	}
-	if err := validateClass(p.Class); err != nil {
-		return Object{}, fmt.Errorf("put object %s/%s: %w", p.Repo, p.Key, err)
-	}
-	if !shaPattern.MatchString(p.SHA256) {
-		return Object{}, fmt.Errorf("put object %s/%s: invalid sha256 %q", p.Repo, p.Key, p.SHA256)
-	}
-	if p.FetchedAt.IsZero() || p.ValidatedAt.IsZero() {
-		return Object{}, fmt.Errorf("put object %s/%s: fetch and validation times are required", p.Repo, p.Key)
-	}
+	return count, nil
+}
 
+// PublishObject inserts or refreshes a blob row and makes an object reference
+// it in one transaction. The object never becomes visible without a blob row
+// that describes a non-empty, internally consistent file.
+func (db *DB) PublishObject(ctx context.Context, blob Blob, p PutObjectParams) (Object, error) {
+	blob, err := validateBlob(blob)
+	if err != nil {
+		return Object{}, err
+	}
+	if err := validateObjectParams(p); err != nil {
+		return Object{}, err
+	}
 	var result Object
-	err := db.withTx(ctx, func(tx *sql.Tx) error {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM blobs WHERE sha256 = ?`, p.SHA256).Scan(&exists); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("put object %s/%s: blob %s is not in the index", p.Repo, p.Key, p.SHA256)
-			}
-			return fmt.Errorf("check blob %s: %w", p.SHA256, err)
+	err = db.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, blobUpsert,
+			blob.SHA256, blob.RawSize, blob.StoredSize, blob.StoredEnc, unixTime(blob.CreatedAt),
+		); err != nil {
+			return fmt.Errorf("put blob %s: %w", blob.SHA256, err)
 		}
-
-		var currentID int64
-		var currentSHA string
-		var currentVerified int
-		err := tx.QueryRowContext(ctx,
-			`SELECT id, sha256, verified FROM objects WHERE repo = ? AND key = ? AND current = 1`,
-			p.Repo, p.Key,
-		).Scan(&currentID, &currentSHA, &currentVerified)
-		hasCurrent := true
-		if errors.Is(err, sql.ErrNoRows) {
-			hasCurrent = false
-		} else if err != nil {
-			return fmt.Errorf("read current object %s/%s: %w", p.Repo, p.Key, err)
-		}
-
-		if hasCurrent && currentSHA == p.SHA256 {
-			verified := currentVerified == 1 || p.Verified
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE objects SET content_type = ?, etag = ?, last_modified = ?, upstream = ?,
-				 fetched_at = ?, validated_at = ?, verified = ? WHERE id = ?`,
-				p.ContentType, p.ETag, p.LastModified, p.Upstream,
-				unixTime(p.FetchedAt), unixTime(p.ValidatedAt), boolInt(verified), currentID,
-			); err != nil {
-				return fmt.Errorf("refresh object %s/%s: %w", p.Repo, p.Key, err)
-			}
-			result, err = objectByID(ctx, tx, currentID)
+		object, err := putObjectTx(ctx, tx, p)
+		if err != nil {
 			return err
 		}
-
-		var generation int64
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(MAX(generation), 0) FROM objects WHERE repo = ? AND key = ?`,
-			p.Repo, p.Key,
-		).Scan(&generation); err != nil {
-			return fmt.Errorf("read generation %s/%s: %w", p.Repo, p.Key, err)
-		}
-		if hasCurrent {
-			if _, err := tx.ExecContext(ctx, `UPDATE objects SET current = 0 WHERE id = ?`, currentID); err != nil {
-				return fmt.Errorf("retire current object %s/%s: %w", p.Repo, p.Key, err)
-			}
-		}
-
-		res, err := tx.ExecContext(ctx,
-			`INSERT INTO objects
-			 (repo, key, class, generation, current, sha256, content_type, etag, last_modified, upstream,
-			  fetched_at, validated_at, last_access, hits, verified)
-			 VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-			p.Repo, p.Key, p.Class, generation+1, p.SHA256, p.ContentType, p.ETag, p.LastModified,
-			p.Upstream, unixTime(p.FetchedAt), unixTime(p.ValidatedAt), unixTime(p.FetchedAt), boolInt(p.Verified),
-		)
-		if err != nil {
-			return fmt.Errorf("insert object %s/%s: %w", p.Repo, p.Key, err)
-		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("read object id %s/%s: %w", p.Repo, p.Key, err)
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE blobs SET refcount = refcount + 1 WHERE sha256 = ?`, p.SHA256); err != nil {
-			return fmt.Errorf("increment blob refcount: %w", err)
-		}
-		result, err = objectByID(ctx, tx, id)
-		return err
+		result = object
+		return nil
 	})
 	if err != nil {
 		return Object{}, err
 	}
 	return result, nil
+}
+
+// PutObject inserts the next generation or refreshes the current row when the digest is unchanged.
+func (db *DB) PutObject(ctx context.Context, p PutObjectParams) (Object, error) {
+	if err := validateObjectParams(p); err != nil {
+		return Object{}, err
+	}
+	var result Object
+	err := db.withTx(ctx, func(tx *sql.Tx) error {
+		var rawSize, storedSize int64
+		var enc string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT raw_size, stored_size, stored_enc FROM blobs WHERE sha256 = ?`, p.SHA256,
+		).Scan(&rawSize, &storedSize, &enc); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("put object %s/%s: blob %s is not in the index", p.Repo, p.Key, p.SHA256)
+			}
+			return fmt.Errorf("check blob %s: %w", p.SHA256, err)
+		}
+		if err := validateStoredMetadata(rawSize, storedSize, enc); err != nil {
+			return fmt.Errorf("put object %s/%s: blob %s: %w", p.Repo, p.Key, p.SHA256, err)
+		}
+		object, err := putObjectTx(ctx, tx, p)
+		if err != nil {
+			return err
+		}
+		result = object
+		return nil
+	})
+	if err != nil {
+		return Object{}, err
+	}
+	return result, nil
+}
+
+func validateObjectParams(p PutObjectParams) error {
+	if p.Repo == "" || p.Key == "" {
+		return fmt.Errorf("put object: repo and key are required")
+	}
+	if err := validateClass(p.Class); err != nil {
+		return fmt.Errorf("put object %s/%s: %w", p.Repo, p.Key, err)
+	}
+	if !shaPattern.MatchString(p.SHA256) {
+		return fmt.Errorf("put object %s/%s: invalid sha256 %q", p.Repo, p.Key, p.SHA256)
+	}
+	if p.FetchedAt.IsZero() || p.ValidatedAt.IsZero() {
+		return fmt.Errorf("put object %s/%s: fetch and validation times are required", p.Repo, p.Key)
+	}
+	return nil
+}
+
+func putObjectTx(ctx context.Context, tx *sql.Tx, p PutObjectParams) (Object, error) {
+	var currentID int64
+	var currentSHA string
+	var currentVerified int
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, sha256, verified FROM objects WHERE repo = ? AND key = ? AND current = 1`,
+		p.Repo, p.Key,
+	).Scan(&currentID, &currentSHA, &currentVerified)
+	hasCurrent := true
+	if errors.Is(err, sql.ErrNoRows) {
+		hasCurrent = false
+	} else if err != nil {
+		return Object{}, fmt.Errorf("read current object %s/%s: %w", p.Repo, p.Key, err)
+	}
+
+	if hasCurrent && currentSHA == p.SHA256 {
+		verified := currentVerified == 1 || p.Verified
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE objects SET content_type = ?, etag = ?, last_modified = ?, upstream = ?,
+			 fetched_at = ?, validated_at = ?, verified = ? WHERE id = ?`,
+			p.ContentType, p.ETag, p.LastModified, p.Upstream,
+			unixTime(p.FetchedAt), unixTime(p.ValidatedAt), boolInt(verified), currentID,
+		); err != nil {
+			return Object{}, fmt.Errorf("refresh object %s/%s: %w", p.Repo, p.Key, err)
+		}
+		return objectByID(ctx, tx, currentID)
+	}
+
+	var generation int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(generation), 0) FROM objects WHERE repo = ? AND key = ?`,
+		p.Repo, p.Key,
+	).Scan(&generation); err != nil {
+		return Object{}, fmt.Errorf("read generation %s/%s: %w", p.Repo, p.Key, err)
+	}
+	if hasCurrent {
+		if _, err := tx.ExecContext(ctx, `UPDATE objects SET current = 0 WHERE id = ?`, currentID); err != nil {
+			return Object{}, fmt.Errorf("retire current object %s/%s: %w", p.Repo, p.Key, err)
+		}
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO objects
+		 (repo, key, class, generation, current, sha256, content_type, etag, last_modified, upstream,
+		  fetched_at, validated_at, last_access, hits, verified)
+		 VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		p.Repo, p.Key, p.Class, generation+1, p.SHA256, p.ContentType, p.ETag, p.LastModified,
+		p.Upstream, unixTime(p.FetchedAt), unixTime(p.ValidatedAt), unixTime(p.FetchedAt), boolInt(p.Verified),
+	)
+	if err != nil {
+		return Object{}, fmt.Errorf("insert object %s/%s: %w", p.Repo, p.Key, err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return Object{}, fmt.Errorf("read object id %s/%s: %w", p.Repo, p.Key, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE blobs SET refcount = refcount + 1 WHERE sha256 = ?`, p.SHA256); err != nil {
+		return Object{}, fmt.Errorf("increment blob refcount: %w", err)
+	}
+	return objectByID(ctx, tx, id)
 }
 
 // CurrentObject returns the current generation for a key.
@@ -188,7 +276,7 @@ func (db *DB) TouchValidated(ctx context.Context, repo, key string, at time.Time
 	if at.IsZero() {
 		return fmt.Errorf("touch validated %s/%s: time is required", repo, key)
 	}
-	res, err := db.sql.ExecContext(ctx,
+	res, err := db.execWrite(ctx,
 		`UPDATE objects SET validated_at = ? WHERE repo = ? AND key = ? AND current = 1`,
 		unixTime(at), repo, key)
 	if err != nil {
@@ -206,7 +294,7 @@ func (db *DB) TouchValidated(ctx context.Context, repo, key string, at time.Time
 
 // SetVerified marks the current generation as verified.
 func (db *DB) SetVerified(ctx context.Context, repo, key string, verified bool) error {
-	res, err := db.sql.ExecContext(ctx,
+	res, err := db.execWrite(ctx,
 		`UPDATE objects SET verified = ? WHERE repo = ? AND key = ? AND current = 1`,
 		boolInt(verified), repo, key)
 	if err != nil {
@@ -246,6 +334,7 @@ func (db *DB) DeleteObject(ctx context.Context, id int64) error {
 func (db *DB) DeleteKey(ctx context.Context, repo, key string) (int, error) {
 	deleted := 0
 	err := db.withTx(ctx, func(tx *sql.Tx) error {
+		count := 0
 		rows, err := tx.QueryContext(ctx, `SELECT id, sha256 FROM objects WHERE repo = ? AND key = ?`, repo, key)
 		if err != nil {
 			return fmt.Errorf("list objects %s/%s: %w", repo, key, err)
@@ -277,8 +366,9 @@ func (db *DB) DeleteKey(ctx context.Context, repo, key string) (int, error) {
 			if err := decrementRefcount(ctx, tx, e.sha); err != nil {
 				return err
 			}
-			deleted++
+			count++
 		}
+		deleted = count
 		return nil
 	})
 	if err != nil {

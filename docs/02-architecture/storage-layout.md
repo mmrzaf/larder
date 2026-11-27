@@ -22,8 +22,9 @@ All directories are created with mode 0750, files with 0640. `data_dir` must be 
 1. Open `tmp/<random>.part`, stream the body into it while computing sha256 (and any additional digest an expectation needs, for example sha512 or sha1).
 2. Check length and expectations. Failure: delete the temp file.
 3. `fsync` the file.
-4. If the final blob path already exists (same content stored before), delete the temp file; otherwise `rename` into place, creating directories as needed.
-5. Insert the rows in one transaction.
+4. Reject an empty body before it can become visible.
+5. If the final blob path already exists, hash those bytes (decompressing gzip-at-rest first) and compare with the digest. Adopt the file only on a match; otherwise `rename` the freshly written temp over it. A file is never trusted by its name alone.
+6. Insert the blob row, the object row and the reference count in one transaction.
 
 Text-class objects (JSON, XML, HTML, plain text, TOML, apt `Packages` and `Release` files) are written gzip-compressed when `compress_metadata` is true (default). The sha256 is computed over the raw bytes before compression. Binary artifacts are never recompressed.
 
@@ -39,7 +40,9 @@ Serving a gzip-at-rest blob: if the client sends `Accept-Encoding: gzip`, send t
 ## Crash safety
 
 - A blob becomes visible only by atomic rename after a successful fsync.
-- Rows are written after the rename. A crash between the two leaves an orphan blob, removed by reconciliation.
+- A file already at a digest path is hashed before it is adopted; a mismatch is replaced with the bytes just written.
+- Empty bodies are rejected before any blob file or row is created.
+- Rows are written after the rename, in one transaction that covers the blob row, the object row and the reference count. A crash between the rename and the transaction leaves an orphan blob, removed by reconciliation.
 - The index uses WAL with `synchronous=FULL`: a committed transaction survives an OS crash. A blob is flushed and renamed into place before any index row refers to it, so a crash leaves at worst an unreferenced blob file, which is removed once it is older than an hour. No state is ever corrupt.
 - The database is snapshotted daily with `VACUUM INTO`; `snapshot_keep` (default 7) snapshots are retained. Snapshots are small compared with blobs.
 

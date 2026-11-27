@@ -1,6 +1,6 @@
 # Index schema
 
-Embedded SQLite, one file, WAL mode, `busy_timeout` 5000 ms, foreign keys on. Schema version stored in `meta`.
+Embedded SQLite, one file, WAL mode, `busy_timeout` 5000 ms, foreign keys on. Schema version stored in `meta`. Writers are serialised through one connection at a time; a lock held by another process is retried with bounded backoff.
 
 ```sql
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -63,7 +63,7 @@ CREATE TABLE pin_rules (set_name TEXT NOT NULL REFERENCES pin_sets(name) ON DELE
 
 ## Reference counting
 
-`blobs.refcount` counts objects (all generations) pointing at the blob. It is incremented and decremented in the same transaction as the object row change. `larder reindex --check` recomputes refcounts from `objects` and reports differences. A blob with refcount 0 is deleted by garbage collection.
+`blobs.refcount` counts objects (all generations) pointing at the blob. It is incremented and decremented in the same transaction as the object row change. Publishing a new object inserts or corrects the blob row, writes the object and increments the count in one transaction, so an object is never visible without a complete blob row. `larder reindex --check` recomputes refcounts from `objects` and reports differences. A blob with refcount 0 is deleted by garbage collection.
 
 ## Pinned status
 

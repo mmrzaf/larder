@@ -30,6 +30,8 @@ var (
 	ErrDigestMismatch = errors.New("digest mismatch")
 	// ErrLengthMismatch means the received body length differs from the declared length.
 	ErrLengthMismatch = errors.New("length mismatch")
+	// ErrEmpty means a commit carried no bytes.
+	ErrEmpty = errors.New("blob is empty")
 )
 
 // Encoding is how a blob is stored on disk.
@@ -69,6 +71,11 @@ type Store struct {
 	// unreferenced ones. A blob file exists before its index rows do, so
 	// without it a sweep can unlink a blob that is about to be referenced.
 	reclaimMu sync.RWMutex
+
+	// blobLocks serialise commits that resolve to the same digest. A commit
+	// validates or replaces the file at the digest path under this lock, so two
+	// commits can never disagree about what that file contains.
+	blobLocks [256]sync.Mutex
 
 	closeOnce sync.Once
 	closeErr  error
@@ -136,6 +143,17 @@ func (s *Store) Publish(fn func() error) error {
 	s.reclaimMu.RLock()
 	defer s.reclaimMu.RUnlock()
 	return fn()
+}
+
+// lockBlob serialises commits for one digest. The returned function releases
+// the lock.
+func (s *Store) lockBlob(sha string) func() {
+	if sha == "" {
+		return func() {}
+	}
+	mu := &s.blobLocks[int(sha[0])%len(s.blobLocks)]
+	mu.Lock()
+	return mu.Unlock
 }
 
 // Reclaim runs fn exclusively with respect to Publish. Callers wrap every

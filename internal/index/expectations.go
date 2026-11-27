@@ -14,7 +14,7 @@ func (db *DB) UpsertExpectation(ctx context.Context, e Expectation) error {
 	if err := validateExpectation(e); err != nil {
 		return err
 	}
-	_, err := db.sql.ExecContext(ctx, expectationUpsert, e.Repo, e.Key, e.Algo, e.Digest, e.Source, unixTime(e.CreatedAt))
+	_, err := db.execWrite(ctx, expectationUpsert, e.Repo, e.Key, e.Algo, e.Digest, e.Source, unixTime(e.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("upsert expectation %s/%s: %w", e.Repo, e.Key, err)
 	}
@@ -32,8 +32,13 @@ func (db *DB) UpsertExpectations(ctx context.Context, expectations []Expectation
 		return nil
 	}
 	return db.withTx(ctx, func(tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx, expectationUpsert)
+		if err != nil {
+			return fmt.Errorf("prepare expectation upsert: %w", err)
+		}
+		defer func() { _ = stmt.Close() }()
 		for _, e := range expectations {
-			if _, err := tx.ExecContext(ctx, expectationUpsert, e.Repo, e.Key, e.Algo, e.Digest, e.Source, unixTime(e.CreatedAt)); err != nil {
+			if _, err := stmt.ExecContext(ctx, e.Repo, e.Key, e.Algo, e.Digest, e.Source, unixTime(e.CreatedAt)); err != nil {
 				return fmt.Errorf("upsert expectation %s/%s: %w", e.Repo, e.Key, err)
 			}
 		}
@@ -111,6 +116,7 @@ func (db *DB) MarkStaleExcept(ctx context.Context, repo, pattern, except string)
 	}
 	updated := 0
 	err := db.withTx(ctx, func(tx *sql.Tx) error {
+		count := 0
 		rows, err := tx.QueryContext(ctx,
 			`SELECT id, key FROM objects WHERE repo = ? AND current = 1 AND class = 'mutable'`, repo)
 		if err != nil {
@@ -142,8 +148,9 @@ func (db *DB) MarkStaleExcept(ctx context.Context, repo, pattern, except string)
 			if _, err := tx.ExecContext(ctx, `UPDATE objects SET validated_at = 0 WHERE id = ?`, e.id); err != nil {
 				return fmt.Errorf("mark object %d stale: %w", e.id, err)
 			}
-			updated++
+			count++
 		}
+		updated = count
 		return nil
 	})
 	if err != nil {

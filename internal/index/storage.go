@@ -49,6 +49,7 @@ func (db *DB) DeleteObjects(ctx context.Context, ids []int64) ([]FreedBlob, erro
 
 	var freed []FreedBlob
 	err := db.withTx(ctx, func(tx *sql.Tx) error {
+		var out []FreedBlob
 		shas := make(map[string]bool)
 		for _, id := range unique {
 			var sha string
@@ -82,8 +83,9 @@ func (db *DB) DeleteObjects(ctx context.Context, ids []int64) ([]FreedBlob, erro
 			if _, err := tx.ExecContext(ctx, `DELETE FROM blobs WHERE sha256 = ?`, sha); err != nil {
 				return fmt.Errorf("delete blob %s: %w", sha, err)
 			}
-			freed = append(freed, FreedBlob{SHA256: sha, StoredSize: storedSize})
+			out = append(out, FreedBlob{SHA256: sha, StoredSize: storedSize})
 		}
+		freed = out
 		return nil
 	})
 	if err != nil {
@@ -127,6 +129,7 @@ func (db *DB) DeleteBlobRows(ctx context.Context, shas []string) ([]FreedBlob, e
 	}
 	var freed []FreedBlob
 	err := db.withTx(ctx, func(tx *sql.Tx) error {
+		var out []FreedBlob
 		for _, sha := range shas {
 			var storedSize int64
 			if err := tx.QueryRowContext(ctx,
@@ -140,8 +143,9 @@ func (db *DB) DeleteBlobRows(ctx context.Context, shas []string) ([]FreedBlob, e
 			if _, err := tx.ExecContext(ctx, `DELETE FROM blobs WHERE sha256 = ? AND refcount = 0`, sha); err != nil {
 				return fmt.Errorf("delete blob %s: %w", sha, err)
 			}
-			freed = append(freed, FreedBlob{SHA256: sha, StoredSize: storedSize})
+			out = append(out, FreedBlob{SHA256: sha, StoredSize: storedSize})
 		}
+		freed = out
 		return nil
 	})
 	if err != nil {

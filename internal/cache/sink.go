@@ -164,11 +164,13 @@ func (e *Engine) removeUnverified(ctx context.Context, object index.Object) erro
 		"sha256", object.SHA256,
 	)
 	e.verifyFailure(object.Repo)
-	if err := e.store.Quarantine(object.SHA256); err != nil {
+	return e.store.Reclaim(func() error {
+		if err := e.store.Quarantine(object.SHA256); err != nil {
+			return err
+		}
+		_, err := e.index.DeleteKey(ctx, object.Repo, object.Key)
 		return err
-	}
-	_, err := e.index.DeleteKey(ctx, object.Repo, object.Key)
-	return err
+	})
 }
 
 func (e *Engine) digestStored(ctx context.Context, sha, algo string) (string, error) {

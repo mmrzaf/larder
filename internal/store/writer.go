@@ -193,6 +193,11 @@ func (w *Writer) Commit() (Blob, map[string]string, error) {
 	for algo, h := range w.hash {
 		digests[algo] = hex.EncodeToString(h.Sum(nil))
 	}
+	if w.rawSize == 0 {
+		_ = os.Remove(w.path)
+		w.path = ""
+		return Blob{}, nil, ErrEmpty
+	}
 	if w.opts.ExpectedSize != nil && w.rawSize != *w.opts.ExpectedSize {
 		_ = os.Remove(w.path)
 		w.path = ""
@@ -227,55 +232,60 @@ func (w *Writer) Commit() (Blob, map[string]string, error) {
 		return Blob{}, nil, err
 	}
 
+	unlock := w.store.lockBlob(sha)
+	defer unlock()
+
 	storedSize := info.Size()
-	existingBlob := false
-	if existing, err := os.Stat(final); err == nil {
+	encoding := EncodingIdentity
+	if w.opts.Compress {
+		encoding = EncodingGzip
+	}
+
+	if existing, statErr := os.Stat(final); statErr == nil {
 		if !existing.Mode().IsRegular() {
 			_ = os.Remove(w.path)
 			w.path = ""
 			return Blob{}, nil, fmt.Errorf("existing blob path is not a regular file: %s", final)
 		}
-		existingBlob = true
-		storedSize = existing.Size()
-		if err := os.Remove(w.path); err != nil {
-			return Blob{}, nil, fmt.Errorf("remove duplicate temp blob: %w", err)
+		// A file already at the digest path is only usable when its bytes
+		// match the digest. Anything else replaces it with the bytes just
+		// written and verified, so a damaged file never becomes metadata.
+		if adopted, verifyErr := inspectStoredBlob(final, sha); verifyErr == nil {
+			if err := os.Remove(w.path); err != nil {
+				return Blob{}, nil, fmt.Errorf("remove duplicate temp blob: %w", err)
+			}
+			w.path = ""
+			w.committed = true
+			return adopted, digests, nil
 		}
-		w.path = ""
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if !errors.Is(statErr, os.ErrNotExist) {
 		_ = os.Remove(w.path)
 		w.path = ""
-		return Blob{}, nil, fmt.Errorf("stat existing blob: %w", err)
-	} else {
-		if err := os.Rename(w.path, final); err != nil {
-			_ = os.Remove(w.path)
-			w.path = ""
-			return Blob{}, nil, fmt.Errorf("rename blob into place: %w", err)
-		}
-		w.path = ""
-		if err := w.store.runHook(w.store.hooks, func(h *commitHooks) func() error { return h.afterRename }); err != nil {
-			return Blob{}, nil, err
-		}
-		if err := syncDir(filepath.Dir(final)); err != nil {
-			return Blob{}, nil, err
-		}
-		if err := syncDir(filepath.Dir(filepath.Dir(final))); err != nil {
-			return Blob{}, nil, err
-		}
-		if err := syncDir(w.store.blobsDir); err != nil {
-			return Blob{}, nil, err
-		}
-		if err := w.store.runHook(w.store.hooks, func(h *commitHooks) func() error { return h.afterDirSync }); err != nil {
-			return Blob{}, nil, err
-		}
+		return Blob{}, nil, fmt.Errorf("stat existing blob: %w", statErr)
 	}
 
-	encoding := EncodingIdentity
-	if w.opts.Compress {
-		encoding = EncodingGzip
+	if err := os.Rename(w.path, final); err != nil {
+		_ = os.Remove(w.path)
+		w.path = ""
+		return Blob{}, nil, fmt.Errorf("rename blob into place: %w", err)
 	}
-	if existingBlob {
-		encoding = detectEncoding(final)
+	w.path = ""
+	if err := w.store.runHook(w.store.hooks, func(h *commitHooks) func() error { return h.afterRename }); err != nil {
+		return Blob{}, nil, err
 	}
+	if err := syncDir(filepath.Dir(final)); err != nil {
+		return Blob{}, nil, err
+	}
+	if err := syncDir(filepath.Dir(filepath.Dir(final))); err != nil {
+		return Blob{}, nil, err
+	}
+	if err := syncDir(w.store.blobsDir); err != nil {
+		return Blob{}, nil, err
+	}
+	if err := w.store.runHook(w.store.hooks, func(h *commitHooks) func() error { return h.afterDirSync }); err != nil {
+		return Blob{}, nil, err
+	}
+
 	w.committed = true
 	return Blob{
 		SHA256:     sha,
@@ -375,18 +385,59 @@ func syncDir(dir string) error {
 	return nil
 }
 
-func detectEncoding(path string) Encoding {
+// inspectStoredBlob verifies that the file at path hashes to sha and reports
+// the metadata implied by its bytes. A file that does not match is unusable.
+func inspectStoredBlob(path, sha string) (Blob, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return EncodingIdentity
+		return Blob{}, err
 	}
 	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return Blob{}, fmt.Errorf("stat blob: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return Blob{}, fmt.Errorf("blob path is not a regular file")
+	}
+	enc, source, closeSource, err := decodeStored(file)
+	if err != nil {
+		return Blob{}, err
+	}
+	hasher := sha256.New()
+	raw, copyErr := io.Copy(hasher, source)
+	var closeErr error
+	if closeSource != nil {
+		closeErr = closeSource()
+	}
+	if copyErr != nil {
+		return Blob{}, fmt.Errorf("read blob: %w", copyErr)
+	}
+	if closeErr != nil {
+		return Blob{}, fmt.Errorf("close blob: %w", closeErr)
+	}
+	if hex.EncodeToString(hasher.Sum(nil)) != sha {
+		return Blob{}, fmt.Errorf("blob digest does not match its name")
+	}
+	return Blob{SHA256: sha, RawSize: raw, StoredSize: info.Size(), StoredEnc: enc}, nil
+}
+
+// decodeStored detects gzip-at-rest and returns a reader over the raw bytes.
+func decodeStored(file *os.File) (Encoding, io.Reader, func() error, error) {
 	var magic [2]byte
-	if _, err := io.ReadFull(file, magic[:]); err != nil {
-		return EncodingIdentity
+	n, err := io.ReadFull(file, magic[:])
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", nil, nil, fmt.Errorf("read blob header: %w", err)
 	}
-	if magic[0] == 0x1f && magic[1] == 0x8b {
-		return EncodingGzip
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", nil, nil, fmt.Errorf("seek blob: %w", err)
 	}
-	return EncodingIdentity
+	if n == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, err := gzip.NewReader(file)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("open compressed blob: %w", err)
+		}
+		return EncodingGzip, gz, gz.Close, nil
+	}
+	return EncodingIdentity, file, nil, nil
 }

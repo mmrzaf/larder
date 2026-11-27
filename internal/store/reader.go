@@ -11,13 +11,14 @@ import (
 
 // Reader serves a blob as raw bytes, decompressing gzip-at-rest blobs.
 type Reader struct {
-	file   *os.File
-	gzip   *gzip.Reader
-	source io.Reader
-	enc    Encoding
-	pos    int64
-	size   int64
-	closed bool
+	file       *os.File
+	gzip       *gzip.Reader
+	source     io.Reader
+	enc        Encoding
+	pos        int64
+	size       int64
+	storedSize int64
+	closed     bool
 }
 
 // Open opens a blob for reading raw bytes.
@@ -34,13 +35,14 @@ func (s *Store) Open(sha string, enc Encoding) (*Reader, error) {
 		return nil, fmt.Errorf("open blob %s: %w", sha, err)
 	}
 	r := &Reader{file: file, enc: enc, size: -1}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat blob %s: %w", sha, err)
+	}
+	r.storedSize = info.Size()
 	switch enc {
 	case EncodingIdentity:
-		info, err := file.Stat()
-		if err != nil {
-			_ = file.Close()
-			return nil, fmt.Errorf("stat blob %s: %w", sha, err)
-		}
 		r.size = info.Size()
 		r.source = file
 	case EncodingGzip:
@@ -132,6 +134,9 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 
 // Size returns the raw size for identity blobs and -1 for compressed blobs.
 func (r *Reader) Size() int64 { return r.size }
+
+// StoredSize returns the size of the bytes on disk, including gzip overhead.
+func (r *Reader) StoredSize() int64 { return r.storedSize }
 
 // Encoding returns the on-disk encoding.
 func (r *Reader) Encoding() Encoding { return r.enc }

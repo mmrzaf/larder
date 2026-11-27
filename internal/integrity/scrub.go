@@ -183,6 +183,11 @@ func (s *Scrubber) Scan(ctx context.Context, opts ScrubOptions) (ScrubResult, er
 		}
 		entry := CorruptBlob{SHA256: blob.SHA256, Reason: reason}
 		if opts.DryRun {
+			count, err := s.index.ObjectCountForBlob(ctx, blob.SHA256)
+			if err != nil {
+				return result, err
+			}
+			entry.Objects = int(count)
 			result.CorruptBlobs = append(result.CorruptBlobs, entry)
 			continue
 		}

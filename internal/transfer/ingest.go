@@ -177,15 +177,10 @@ func Ingest(ctx context.Context, st *store.Store, idx *index.DB, repo config.Rep
 			result.Errors = append(result.Errors, key+": "+err.Error())
 			continue
 		}
-		if err := idx.PutBlob(ctx, index.Blob{
+		_, err = idx.PublishObject(ctx, index.Blob{
 			SHA256: blob.SHA256, RawSize: blob.RawSize, StoredSize: blob.StoredSize,
 			StoredEnc: string(blob.StoredEnc), CreatedAt: opts.Now,
-		}); err != nil {
-			result.Failed++
-			result.Errors = append(result.Errors, key+": "+err.Error())
-			continue
-		}
-		_, err = idx.PutObject(ctx, index.PutObjectParams{
+		}, index.PutObjectParams{
 			Repo: repo.Name, Key: plan.Key, Class: "immutable", SHA256: blob.SHA256,
 			ContentType: contentTypeFor(path), Upstream: "ingest",
 			FetchedAt: opts.Now, ValidatedAt: opts.Now, Verified: len(expectations) > 0,
